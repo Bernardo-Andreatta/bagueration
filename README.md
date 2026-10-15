@@ -41,3 +41,7 @@ Requirements: JDK 17, Android SDK 35, Python 3 (for the blend step), about 1 GB 
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad, Apache-2.0.
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) by k2-fsa, Apache-2.0. It runs the voices on the device and hosts the downloadable [Piper](https://github.com/rhasspy/piper) voices, each under its own license.
 - [PdfBox-Android](https://github.com/TomRoush/PdfBox-Android) and [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/), Apache-2.0.
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE). The voice model and speech engine downloaded by `tools/setup.sh` keep their own licenses (listed above).
