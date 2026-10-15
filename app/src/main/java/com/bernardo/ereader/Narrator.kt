@@ -26,7 +26,9 @@ import kotlin.concurrent.thread
  * Splits the book into sentences starting at any char offset, synthesizes ahead on one
  * thread and plays on another so there is (usually) no gap between sentences.
  */
-class Narrator(private val ctx: Context, private val listener: Listener) {
+class Narrator(context: Context, @Volatile var listener: Listener) {
+    // application context: the narrator can outlive an activity while an audio file is being made
+    private val ctx: Context = context.applicationContext
 
     interface Listener {
         fun onReady()
@@ -115,17 +117,39 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
     val isPreviewing get() = session?.preview == true
     var threads = 4
     val isReady get() = ready
-    val isPlaying get() = session != null
+    val isPlaying get() = session != null || filePlayer != null
+    val isPlayingFile get() = filePlayer != null
+
+    // ---------- buffering profile, picked from the phone's memory ----------
+    private val totalRamMb: Long = runCatching {
+        android.app.ActivityManager.MemoryInfo().also { ctx.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(it) }.totalMem / 1_048_576
+    }.getOrDefault(4_000L)
+    /** How much audio to keep ready ahead of the listener (audio costs ~5.5 MB per minute in memory). */
+    private val baseAheadMs = when { totalRamMb >= 7_000 -> 300_000L; totalRamMb >= 5_000 -> 180_000L; else -> 90_000L }
+    /** Generation time / audio time, smoothed. Above ~1 the phone can't keep up (usually thermal throttling). */
+    @Volatile private var rtf = 0.6
+    /** Slow phone (or throttling): keep a bigger lead so stalls are absorbed. */
+    val currentRtf get() = rtf
+    private val aheadTargetMs get() = if (rtf > 0.8) baseAheadMs * 3 / 2 else baseAheadMs
 
     fun init() = thread(name = "tts-init") {
         try {
             dataDir = copyAssetDir("kokoro/espeak-ng-data", "espeak-ng-data-v1")
-            pool = Executors.newSingleThreadExecutor()
+            // audio priority for the voice worker; the engine's own threads are created from it and inherit it.
+            // Android still moves background apps to slower cores, but this keeps us ahead of other work.
+            pool = Executors.newSingleThreadExecutor { r ->
+                Thread({
+                    runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
+                    r.run()
+                }, "tts-worker")
+            }
             // load the current voice's model up front so the first sentence starts quickly
             pool!!.submit { runCatching { engineFor(Voices.byId(voiceId) ?: Voices.byId(Voices.DEFAULT_ID)!!) } }.get()
             ready = true
+            AppLog.i("Narrator", "buffer profile: RAM ${totalRamMb} MB -> ${baseAheadMs / 1000}s ahead, memory cache ${cacheBudget * 4 / 1_048_576} MB, disk cache 300 MB")
             main.post { listener.onReady() }
         } catch (t: Throwable) {
+            AppLog.e("Narrator", "TTS init failed", t)
             main.post { listener.onError("TTS init failed: ${t.message}") }
         }
     }
@@ -134,6 +158,7 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
     private fun engineFor(v: VoiceInfo): OfflineTts {
         val key = if (v.builtIn) "kokoro:${Voices.espeakLang(v)}" else "piper:${v.piper}"
         engine?.takeIf { key == engineKey }?.let { return it }
+        AppLog.i("Narrator", "loading engine $key (voice ${v.id}, threads $threads)")
         loadingEngine = true
         try {
             engine?.release()
@@ -166,7 +191,7 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
             }
             engine = e
             engineKey = key
-            Log.d("Narrator", "engine loaded: $key")
+            AppLog.i("Narrator", "engine loaded: $key")
             return e
         } finally {
             loadingEngine = false
@@ -175,18 +200,116 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
 
     fun start(text: String, from: Int) {
         stop()
+        stopPrefetch()
         session = Session(text, from, false).also { it.begin() }
+    }
+
+    private var prefetchSession: Session? = null
+
+    /**
+     * Not reading (paused, or a book was just opened): keep generating ahead from [from] into the cache, up to the
+     * same lead as when reading, so pressing play starts instantly and with a full buffer.
+     */
+    fun prefetch(text: String, from: Int) {
+        if (session != null || filePlayer != null || renderSession != null) return
+        stopPrefetch()
+        prefetchSession = Session(text, from, false, prefetchOnly = true).also { it.begin() }
+    }
+
+    fun stopPrefetch() {
+        prefetchSession?.cancel()
+        prefetchSession = null
     }
 
     /** Speak a sample with the current settings, or with [withVoice] (no highlighting / progress callbacks). */
     fun preview(text: String, withVoice: String? = null) {
         stop()
+        stopPrefetch()
         session = Session(text, 0, true, withVoice).also { it.begin() }
     }
 
     fun stop() {
         session?.cancel()
         session = null
+        filePlayer?.release()
+        filePlayer = null
+    }
+
+    // ---------- renders: make an audio file without playing it ----------
+
+    private var renderSession: Session? = null
+    val isRendering get() = renderSession != null
+
+    fun render(text: String, from: Int, until: Int, spec: RenderSpec, out: RenderOut) {
+        cancelRender()
+        stopPrefetch()
+        val wrapped = RenderOut(out.writerFor, out.onProgress,
+            onDone = { ms, sync -> renderSession = null; out.onDone(ms, sync) },
+            onError = { msg -> renderSession = null; out.onError(msg) })
+        renderSession = Session(text, from, false, until = until, spec = spec, out = wrapped).also { it.begin() }
+    }
+
+    fun cancelRender() {
+        renderSession?.cancel()
+        renderSession = null
+    }
+
+    // ---------- playing a finished audio file, highlight driven by its sync map ----------
+
+    private var filePlayer: FilePlayer? = null
+
+    /** Plays [r] from the sentence at [from]; when the file ends, reading continues live from where it stops. */
+    fun playRender(r: Render, text: String, from: Int) {
+        stop()
+        stopPrefetch()
+        val sync = Renders.readSync(ctx, r.id)
+        if (sync.isEmpty()) return start(text, from)
+        filePlayer = FilePlayer(r, text, sync, from)
+    }
+
+    private inner class FilePlayer(private val r: Render, private val text: String, private val sync: List<SyncPoint>, from: Int) {
+        private val mp = android.media.MediaPlayer()
+        @Volatile private var released = false
+        private var shown = -1
+        private val tick = object : Runnable {
+            override fun run() {
+                if (released) return
+                val pos = runCatching { mp.currentPosition.toLong() }.getOrDefault(0L)
+                // last sync point at or before the current position
+                var lo = 0; var hi = sync.size - 1; var idx = 0
+                while (lo <= hi) { val mid = (lo + hi) / 2; if (sync[mid].ms <= pos) { idx = mid; lo = mid + 1 } else hi = mid - 1 }
+                if (idx != shown) { shown = idx; listener.onSentence(sync[idx].start, sync[idx].end) }
+                main.postDelayed(this, 120)
+            }
+        }
+
+        init {
+            mp.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            mp.setDataSource(Renders.audio(ctx, r.id).path)
+            mp.prepare()
+            val startAt = sync.lastOrNull { it.start <= from }?.ms ?: 0L
+            mp.seekTo(startAt, android.media.MediaPlayer.SEEK_CLOSEST)
+            mp.setOnCompletionListener {
+                if (released) return@setOnCompletionListener
+                AppLog.i("Narrator", "audio file ${r.id} finished, continuing live at ${r.toChar}")
+                release()
+                filePlayer = null
+                if (r.toChar < text.length) start(text, r.toChar) else listener.onFinished()
+            }
+            mp.start()
+            listener.onBuffering(false)
+            main.post(tick)
+            AppLog.i("Narrator", "playing audio file ${r.id} from ${startAt}ms")
+        }
+
+        fun release() {
+            if (released) return
+            released = true
+            main.removeCallbacks(tick)
+            runCatching { mp.stop() }
+            mp.release()
+        }
     }
 
     /**
@@ -194,6 +317,7 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
      * book is playing: re-render from the sentence being heard. Pause lengths apply live and don't need this.
      */
     fun applyToPlaying() {
+        if (filePlayer != null) return   // a pre-made audio file can't change; settings apply to live reading
         val s = session ?: return
         if (s.preview) return
         start(s.bookText, s.playingStart)
@@ -201,6 +325,8 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
 
     fun release() {
         stop()
+        stopPrefetch()
+        cancelRender()
         if (instance === this) instance = null
         ready = false
         val p = pool
@@ -239,11 +365,54 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
     private class Cached(val samples: FloatArray, val rate: Int)
     private val cache = LinkedHashMap<String, Cached>(64, 0.75f, true)   // access order = LRU
     private var cacheSamples = 0L
-    private val cacheBudget = 8_000_000L   // floats: ~32 MB, ~5.5 min of audio at 24 kHz
+    private val cacheBudget: Long get() = (baseAheadMs * 3 / 2 + 180_000L) / 1000 * 24_000   // floats in memory
 
-    private fun cacheKey(text: String, v: String, sp: Float) = "$v|$sp|$maxGapMs|$text"
+    private fun cacheKey(text: String, v: String, sp: Float, gap: Int = maxGapMs) = "$v|$sp|$gap|$text"
 
-    private fun cacheGet(key: String): Cached? = synchronized(cache) { cache[key] }
+    /** Memory first, then the disk cache (which survives app restarts). */
+    private fun cacheGet(key: String): Cached? {
+        synchronized(cache) { cache[key] }?.let { return it }
+        return diskGet(key)?.also { c -> synchronized(cache) { cache[key] = c; cacheSamples += c.samples.size } }
+    }
+
+    // generated audio is also kept on disk as 16-bit PCM (~2.9 MB/min), capped, oldest dropped first
+    private val diskDir by lazy { File(ctx.cacheDir, "tts").apply { mkdirs() } }
+    private val diskCapBytes = 300L * 1024 * 1024
+    private var diskPuts = 0
+
+    private fun diskFile(key: String): File {
+        val h = java.security.MessageDigest.getInstance("SHA-1").digest(key.toByteArray()).joinToString("") { "%02x".format(it) }
+        return File(diskDir, "$h.pcm")
+    }
+
+    private fun diskGet(key: String): Cached? = runCatching {
+        val f = diskFile(key)
+        if (!f.exists()) return null
+        java.io.DataInputStream(f.inputStream().buffered()).use { i ->
+            val rate = i.readInt(); val n = i.readInt()
+            val bytes = ByteArray(n * 2).also { i.readFully(it) }
+            val sh = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+            f.setLastModified(System.currentTimeMillis())
+            Cached(FloatArray(n) { sh.get(it) / 32767f }, rate)
+        }
+    }.getOrNull()
+
+    private fun diskPut(key: String, c: Cached) {
+        runCatching {
+            val f = diskFile(key)
+            val tmp = File(f.path + ".tmp")
+            val buf = java.nio.ByteBuffer.allocate(8 + c.samples.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            buf.order(java.nio.ByteOrder.BIG_ENDIAN).putInt(c.rate).putInt(c.samples.size).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            for (v in c.samples) buf.putShort((v.coerceIn(-1f, 1f) * 32767).toInt().toShort())
+            tmp.writeBytes(buf.array())
+            tmp.renameTo(f)
+            if (++diskPuts % 25 == 0) {
+                val files = diskDir.listFiles().orEmpty().sortedBy { it.lastModified() }
+                var total = files.sumOf { it.length() }
+                for (old in files) { if (total <= diskCapBytes) break; total -= old.length(); old.delete() }
+            }
+        }
+    }
 
     private fun cachePut(key: String, c: Cached) = synchronized(cache) {
         cache.put(key, c)?.let { cacheSamples -= it.samples.size }
@@ -262,12 +431,34 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
     private class Chunk(val start: Int, val end: Int, val samples: FloatArray, val pauseFactor: Float = 1f,
                         val clause: Boolean = false, val rate: Int = 24000, val subs: List<Triple<Int, Int, Float>> = emptyList())
 
-    private inner class Session(private val text: String, private val from: Int, val preview: Boolean, private val voiceOverride: String? = null) {
-        private val voiceInfo = Voices.byId(voiceOverride ?: voiceId) ?: Voices.byId(Voices.DEFAULT_ID)!!
+    /** Settings frozen for a render (live sessions follow the sliders instead). */
+    class RenderSpec(val voiceId: String, val speed: Float, val pauseMs: Int, val commaPauses: Boolean,
+                     val commaPauseMs: Int, val maxGapMs: Int, val phrasing: Int)
+
+    /** Where a render's audio goes, and who hears about progress. */
+    class RenderOut(val writerFor: (Int) -> AacWriter, val onProgress: (Float, Long) -> Unit,
+                    val onDone: (Long, List<SyncPoint>) -> Unit, val onError: (String) -> Unit)
+
+    /** A queued piece: its audio (when ready) and an estimate of how long it'll play until then. */
+    private class Item(val f: Future<Chunk?>, val estMs: Long)
+
+    private inner class Session(private val text: String, private val from: Int, val preview: Boolean,
+                                private val voiceOverride: String? = null, val prefetchOnly: Boolean = false,
+                                private val until: Int = text.length, private val spec: RenderSpec? = null,
+                                private val out: RenderOut? = null) {
+        private val rendering = out != null
+        private val voiceInfo = Voices.byId(spec?.voiceId ?: voiceOverride ?: voiceId) ?: Voices.byId(Voices.DEFAULT_ID)!!
         private val sid = Voices.effectiveSid(ctx, voiceInfo)
+        // settings: frozen for renders, live otherwise
+        private val cSpeed get() = spec?.speed ?: speed
+        private val cPause get() = spec?.pauseMs ?: pauseMs
+        private val cCommaPauses get() = spec?.commaPauses ?: commaPauses
+        private val cCommaPause get() = spec?.commaPauseMs ?: commaPauseMs
+        private val cGap get() = spec?.maxGapMs ?: maxGapMs
+        private val cPhrasing get() = spec?.phrasing ?: phrasing
         @Volatile private var cancelled = false
-        // in-order futures; bounded so we only run ~10 sentences ahead
-        private val queue = ArrayBlockingQueue<Future<Chunk?>>(10)
+        // in-order pieces; how far ahead we generate is limited by audio time (aheadTargetMs), not count
+        private val queue = java.util.concurrent.LinkedBlockingQueue<Item>()
         private val endMarker = Chunk(-1, -1, FloatArray(0))
         private val endFuture = FutureTask<Chunk?> { endMarker }.also { it.run() }
         @Volatile var playingStart = from
@@ -277,14 +468,56 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
 
         fun begin() {
             genThread = thread(name = "tts-gen") { generate() }
-            playThread = thread(name = "tts-play") { play() }
+            when {
+                rendering -> playThread = thread(name = "tts-render") { renderToFile() }
+                !prefetchOnly -> playThread = thread(name = "tts-play") { play() }
+            }
+        }
+
+        /** Render mode: write every piece (and its pauses) into the audio file, noting where each sentence starts. */
+        private fun renderToFile() {
+            val o = out!!
+            var writer: AacWriter? = null
+            val sync = ArrayList<SyncPoint>()
+            var rate = 24000
+            try {
+                while (!cancelled) {
+                    val f = queue.take().f
+                    val c = try { f.get() } catch (_: java.util.concurrent.CancellationException) { null } ?: continue
+                    if (c === endMarker) break
+                    if (writer == null) { rate = c.rate; writer = o.writerFor(rate) }
+                    val base = writer.samplesWritten
+                    val subs = if (c.subs.isEmpty()) listOf(Triple(c.start, c.end, 0f)) else c.subs
+                    for ((a, b, frac) in subs) sync += SyncPoint(a, b, (base + (frac * c.samples.size).toLong()) * 1000 / rate)
+                    writer.write(c.samples)
+                    writer.silence((rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor).toInt())
+                    val done = ((c.end - from).toFloat() / (until - from).coerceAtLeast(1)).coerceIn(0f, 1f)
+                    val audioMs = writer.samplesWritten * 1000 / rate
+                    main.post { o.onProgress(done, audioMs) }
+                }
+                if (cancelled) { writer?.abort(); return }
+                val total = writer?.let { it.samplesWritten * 1000 / rate } ?: 0L
+                writer?.finish()
+                main.post { o.onDone(total, sync) }
+            } catch (_: InterruptedException) {
+                writer?.abort()
+            } catch (t: Throwable) {
+                AppLog.e("Narrator", "render failed", t)
+                writer?.abort()
+                main.post { o.onError(t.message ?: t.javaClass.simpleName) }
+            }
+        }
+
+        /** Audio ready or being generated ahead of the listener (pauses included, estimates for unfinished pieces). */
+        private fun aheadMs(): Long = queue.sumOf { item ->
+            if (item.f.isDone) durationMs(item.f) + cPause else item.estMs
         }
 
         fun cancel() {
             cancelled = true
             genThread?.interrupt()
             playThread?.interrupt()
-            while (true) (queue.poll() ?: break).cancel(false)
+            while (true) (queue.poll() ?: break).f.cancel(false)
         }
 
         private fun generate() {
@@ -292,14 +525,16 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
                 while (!ready && !cancelled) Thread.sleep(100) // still loading the model
                 val pool = pool ?: return
                 var pos = from.coerceIn(0, text.length)
-                while (!cancelled && pos < text.length) {
+                while (!cancelled && pos < until) {
+                    // a render steps aside while you're listening live, and picks up when you stop
+                    while (rendering && !cancelled && session != null) Thread.sleep(500)
                     val (s, e0) = nextSentence(pos, MAX_SENTENCE) ?: break
                     var e = e0
                     // longer phrasing: give the model several sentences (never across a paragraph) so it can
                     // carry intonation and timing from one sentence into the next
                     val sentences = arrayListOf(s to e0)
-                    if (phrasing > 1) {
-                        val (maxSentences, maxChars) = if (phrasing == 2) 3 to 300 else 8 to 480
+                    if (cPhrasing > 1) {
+                        val (maxSentences, maxChars) = if (cPhrasing == 2) 3 to 300 else 8 to 480
                         while (sentences.size < maxSentences && !isParagraphEnd(e)) {
                             val next = nextSentence(e, MAX_SENTENCE) ?: break
                             if (next.second - s > maxChars) break
@@ -322,10 +557,13 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
                         }
                         val sentence = speakable(shown, voiceInfo.lang)
                         val factor = if (k < parts.size - 1) clausePause(shown) else sentencePause(shown, e)
-                        val v = "${voiceInfo.id}#$sid"; val sp = speed
+                        val v = "${voiceInfo.id}#$sid"; val sp = cSpeed
                         val isClause = k < parts.size - 1
-                        val key = cacheKey(sentence, v, sp)
+                        val key = cacheKey(sentence, v, sp, cGap)
                         // recently generated (heard or buffered ahead)? use it right away, no engine wait
+                        // stay a set amount of listening time ahead (bigger on phones that generate slowly)
+                        while (!cancelled && aheadMs() > aheadTargetMs) Thread.sleep(300)
+                        if (cancelled) return
                         val cached = cacheGet(key)
                         val job: Future<Chunk?> = if (cached != null) {
                             FutureTask<Chunk?> { Chunk(s, e, cached.samples, factor, isClause, cached.rate, subs) }.also { it.run() }
@@ -337,21 +575,29 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
                                 if (cancelled) return@submit null
                                 val t0 = System.nanoTime()
                                 val audio = eng.generate(sentence, sid, sp)
-                                Log.d("Narrator", "gen ${(System.nanoTime() - t0) / 1_000_000}ms for " +
+                                AppLog.i("Narrator", "gen ${(System.nanoTime() - t0) / 1_000_000}ms for " +
                                     "${audio.samples.size * 1000L / audio.sampleRate}ms audio, ${sentence.length} chars")
                                 val samples = squeezePauses(trimSilence(audio.samples, audio.sampleRate), audio.sampleRate, sentence)
-                                cachePut(key, Cached(samples, audio.sampleRate))   // keep it even if this session was cancelled
+                                val genMs = (System.nanoTime() - t0) / 1_000_000.0
+                                val audioMs = audio.samples.size * 1000.0 / audio.sampleRate
+                                if (audioMs > 300) rtf = rtf * 0.8 + (genMs / audioMs) * 0.2
+                                val c = Cached(samples, audio.sampleRate)
+                                if (!rendering) {   // renders don't push live audio out of the caches
+                                    cachePut(key, c)   // keep it even if this session was cancelled
+                                    diskPut(key, c)
+                                }
                                 Chunk(s, e, samples, factor, isClause, audio.sampleRate, subs)
                             }
                         }
-                        queue.put(job)
+                        // ~14.5 characters per second of speech at 1x
+                        queue.put(Item(job, (sentence.length / (14.5 * sp) * 1000).toLong() + cPause))
                         if (cancelled) { job.cancel(false); return }
                     }
                 }
-                queue.put(endFuture)
+                queue.put(Item(endFuture, 0))
             } catch (_: InterruptedException) {
             } catch (t: Throwable) {
-                Log.e("Narrator", "generation failed", t)
+                AppLog.e("Narrator", "generation failed", t)
                 main.post { listener.onError("TTS error: ${t.message}") }
             }
         }
@@ -415,7 +661,7 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
         }
 
         private fun clauses(s: Int, e: Int): List<Pair<Int, Int>> {
-            if (!commaPauses) return listOf(s to e)
+            if (!cCommaPauses) return listOf(s to e)
             fun words(a: Int, b: Int) = text.substring(a, b).split(' ', '\n').count { w -> w.any { it.isLetterOrDigit() } }
             val out = ArrayList<Pair<Int, Int>>()
             var start = s
@@ -454,7 +700,7 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
          * are never clipped. Commas get their own pause separately.
          */
         private fun squeezePauses(x: FloatArray, rate: Int, spoken: String): FloatArray {
-            val maxGap = maxGapMs
+            val maxGap = cGap
             if (maxGap <= 0) return x
             val fr = rate / 100
             val n = x.size / fr
@@ -562,20 +808,21 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
             val silenceBuf = FloatArray(4096)
             try {
                 while (!cancelled) {
-                    val f = queue.take()
+                    val f = queue.take().f
                     if (!f.isDone) {
                         // first start, or synthesis fell behind: refill a few clauses instead of
                         // stuttering one clause at a time
-                        if (track != null) Log.d("Narrator", "UNDERRUN")
+                        if (track != null) AppLog.i("Narrator", "UNDERRUN")
                         main.post { if (!cancelled && !preview) listener.onBuffering(true) }
                         awaitQuietly(f)
-                        // refill by amount of audio, not number of pieces (pieces can be 1 sentence or 3):
-                        // first start ~3 s so a tiny "Hello!" isn't followed by a gap, after running dry ~5 s
-                        val wantMs = if (track == null) 3_000L else 5_000L
+                        // refill by amount of audio: first start ~3 s (no gap after a tiny "Hello!"); after running dry
+                        // 8 s, or 20 s when the phone is falling behind (throttling) so it doesn't stutter repeatedly
+                        val wantMs = when { track == null -> 3_000L; rtf >= 0.95 -> 20_000L; else -> 8_000L }
+                        if (track != null) AppLog.i("Narrator", "refilling ${wantMs / 1000}s (rtf ${"%.2f".format(rtf)})")
                         var readyMs = durationMs(f)
                         for (next in queue.toArray()) {
                             if (readyMs >= wantMs || cancelled) break
-                            @Suppress("UNCHECKED_CAST") val nf = next as Future<Chunk?>
+                            val nf = (next as Item).f
                             awaitQuietly(nf)
                             if (runCatching { nf.get() }.getOrNull() === endMarker) break
                             readyMs += durationMs(nf)
@@ -617,7 +864,7 @@ class Narrator(private val ctx: Context, private val listener: Listener) {
                         off += n
                     }
                     // pause before the next sentence (written as silence so it stays in sync with the highlight)
-                    var silence = (rate * (if (c.clause) commaPauseMs else pauseMs) / 1000f * c.pauseFactor).toInt()
+                    var silence = (rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor).toInt()
                     while (silence > 0 && !cancelled) {
                         val n = minOf(silenceBuf.size, silence)
                         track.write(silenceBuf, 0, n, AudioTrack.WRITE_BLOCKING)

@@ -5,12 +5,16 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:name=".App"
         android:label="bagueration2.0"
-        android:icon="@android:drawable/ic_menu_agenda"
+        android:icon="${appIcon}"
+        android:roundIcon="${appRoundIcon}"
         android:theme="@style/ReaderTheme"
         android:extractNativeLibs="true">
 
@@ -41,6 +45,16 @@
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".RendersActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
+
+        <service
+            android:name=".RenderService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <activity
             android:name=".SettingsActivity"

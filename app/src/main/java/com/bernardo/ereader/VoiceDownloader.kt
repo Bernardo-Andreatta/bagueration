@@ -87,8 +87,10 @@ object VoiceDownloader {
                 File(tmp, ".complete").createNewFile()
                 target.deleteRecursively()
                 if (!tmp.renameTo(target)) error("couldn't save the voice")
+                AppLog.i("Download", "voice ${v.id} installed")
                 main.post(onDone)
             } catch (t: Throwable) {
+                AppLog.e("Download", "voice ${v.id} failed", t)
                 tmp.deleteRecursively()
                 main.post { onError(if (cancelled) "Download cancelled" else (t.message ?: t.javaClass.simpleName)) }
             }

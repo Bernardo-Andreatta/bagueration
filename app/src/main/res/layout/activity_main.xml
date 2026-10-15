@@ -95,6 +95,18 @@
                 android:textSize="13sp" />
 
             <TextView
+                android:id="@+id/audioChip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:drawablePadding="4dp"
+                android:gravity="center_vertical"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="4dp"
+                android:text="Pre-load"
+                android:textSize="13sp" />
+
+            <TextView
                 android:id="@+id/speedChip"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

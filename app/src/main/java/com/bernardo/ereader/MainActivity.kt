@@ -47,6 +47,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         private const val PART_CHARS = 30_000
         private const val MENU_READ_HERE = 1001
         private const val MENU_PRONOUNCE = 1002
+        private const val MENU_BOOKMARK = 1003
+        private const val MENU_NOTE = 1004
     }
 
     private lateinit var scroll: ScrollView
@@ -55,6 +57,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private lateinit var playBtn: ImageButton
     private lateinit var busy: ProgressBar
     private lateinit var speedChip: TextView
+    private lateinit var audioChip: TextView
     private lateinit var controls: LinearLayout
     private lateinit var jumpBack: ImageButton
     private lateinit var loadingOverlay: LinearLayout
@@ -88,6 +91,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         playBtn = findViewById(R.id.play)
         busy = findViewById(R.id.busy)
         speedChip = findViewById(R.id.speedChip)
+        audioChip = findViewById(R.id.audioChip)
+        audioChip.setOnClickListener { openRenders() }
         controls = findViewById(R.id.controls)
         jumpBack = findViewById(R.id.jumpBack)
         loadingOverlay = findViewById(R.id.loadingOverlay)
@@ -100,7 +105,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             false
         }
 
-        narrator = Narrator(this, this).apply {
+        // reuse the engine if it's still alive (an audio file was being made while the reader was closed)
+        val alive = Narrator.instance?.takeIf { it.isRendering }
+        narrator = alive?.also { it.listener = this } ?: Narrator(this, this).apply {
             val last = prefs.getString("last_book", null)
             voiceId = Voices.resolve(this@MainActivity, last, last?.let { prefs.getString("lang2_$it", null) }).id
             speed = prefs.getFloat("speed", 1.0f)
@@ -135,13 +142,25 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         // Long-press a word -> "Read from here" in the selection menu
         pageView.customSelectionActionModeCallback = object : ActionMode.Callback {
             override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-                menu.add(Menu.NONE, MENU_PRONOUNCE, 1, "Fix pronunciation")
+                menu.add(Menu.NONE, MENU_NOTE, 1, "Note")
+                menu.add(Menu.NONE, MENU_BOOKMARK, 2, "Bookmark")
+                menu.add(Menu.NONE, MENU_PRONOUNCE, 3, "Fix pronunciation")
                 menu.add(Menu.NONE, MENU_READ_HERE, 0, "Read from here")
                     .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
                 return true
             }
             override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
             override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+                if (item.itemId == MENU_NOTE || item.itemId == MENU_BOOKMARK) {
+                    val a = minOf(pageView.selectionStart, pageView.selectionEnd).coerceAtLeast(0)
+                    val b = maxOf(pageView.selectionStart, pageView.selectionEnd).coerceAtMost(pageView.text.length)
+                    mode.finish()
+                    if (b > a) {
+                        if (item.itemId == MENU_NOTE) editNote(null, pages[page] + a, pages[page] + b)
+                        else addBookmark(pages[page] + a, pages[page] + b)
+                    }
+                    return true
+                }
                 if (item.itemId == MENU_PRONOUNCE) {
                     val a = minOf(pageView.selectionStart, pageView.selectionEnd).coerceAtLeast(0)
                     val b = maxOf(pageView.selectionStart, pageView.selectionEnd).coerceAtMost(pageView.text.length)
@@ -159,6 +178,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             override fun onDestroyActionMode(mode: ActionMode) {}
         }
 
+        AppLog.offerAfterCrash(this)
         val handled = handleViewIntent(intent)
         if (!handled) prefs.getString("last_book", null)?.let { openBook(it) } ?: run { showEmpty(); showLibrary() }
     }
@@ -186,6 +206,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (isOver(jumpBack, e) || isOver(loadingOverlay, e) || isOver(controls, e)) return false
                 if (fullscreen) { setFullscreen(false); return true }   // tap anywhere brings the controls back
                 if (bookId == null || jumpPopup != null) return false
                 showJumpPopup(e.rawX, e.rawY)
@@ -205,6 +226,13 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     /** While narrating: tap a phrase -> small "Read from here" bubble that jumps narration to that sentence. */
+    /** Is the touch on [v] (only if it's showing)? */
+    private fun isOver(v: View, e: MotionEvent): Boolean {
+        if (v.visibility != View.VISIBLE || !v.isShown) return false
+        val loc = IntArray(2).also { v.getLocationOnScreen(it) }
+        return e.rawX >= loc[0] && e.rawX <= loc[0] + v.width && e.rawY >= loc[1] && e.rawY <= loc[1] + v.height
+    }
+
     private fun showJumpPopup(rawX: Float, rawY: Float) {
         val loc = IntArray(2)
         pageView.getLocationOnScreen(loc)
@@ -213,25 +241,50 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (rawY < sLoc[1] || rawY > sLoc[1] + scroll.height) return   // tap was on the bottom bar
         val local = pageView.getOffsetForPosition(rawX - loc[0], rawY - loc[1])
         if (local < 0) return
-        val (s, e) = sentenceAround(pages[page] + local)
+        val at = pages[page] + local
+        val note = annotations.firstOrNull { it.isNote && at >= it.start && at < it.end }
+        val (s, e) = if (note != null) note.start to note.end else sentenceAround(at)
         if (e <= s) return
         val sp = pageView.text as? Spannable ?: return
         sp.setSpan(tapMark, (s - pages[page]).coerceIn(0, sp.length), (e - pages[page]).coerceIn(0, sp.length),
             Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
 
         val d = resources.displayMetrics.density
-        val label = TextView(this).apply {
-            text = "▶  Read from here"
-            textSize = 15f
-            setTextColor(th.onAccent)
-            setPadding((16 * d).toInt(), (10 * d).toInt(), (16 * d).toInt(), (10 * d).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = 20 * d
-                setColor(th.accent)
-            }
+        fun dp(v: Int) = (v * d).toInt()
+        val bubble = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { cornerRadius = 18 * d; setColor(th.accent) }
             elevation = 6 * d
+            setPadding(dp(6), dp(4), dp(6), dp(4))
         }
-        val popup = PopupWindow(label, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+        lateinit var popup: PopupWindow
+        fun action(label: String, onClick: () -> Unit) = TextView(this).apply {
+            text = label; textSize = 14f; setTextColor(th.onAccent)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setOnClickListener { popup.dismiss(); onClick() }
+        }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        if (note != null) {
+            // tapped a note: show it
+            bubble.addView(TextView(this).apply {
+                text = note.note; textSize = 14f; setTextColor(th.onAccent); maxLines = 6
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                maxWidth = (resources.displayMetrics.widthPixels * 0.8).toInt()
+                setPadding(dp(10), dp(8), dp(10), dp(2))
+            })
+            row.addView(action("▶ Read") { startReading(s) })
+            row.addView(action("Edit") { editNote(note) })
+            row.addView(action("Delete") { removeAnnotation(note) })
+        } else {
+            val marked = annotations.firstOrNull { !it.isNote && it.start == s }
+            row.addView(action("▶ Read from here") { startReading(s) })
+            row.addView(action(if (marked != null) "🔖 Remove" else "🔖 Bookmark") {
+                if (marked != null) removeAnnotation(marked) else addBookmark(s, e)
+            })
+            row.addView(action("✎ Note") { editNote(null, s, e) })
+        }
+        bubble.addView(row)
+        popup = PopupWindow(bubble, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
             android.view.ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
             isOutsideTouchable = true
             setOnDismissListener {
@@ -239,16 +292,92 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                 jumpPopup = null
             }
         }
-        label.setOnClickListener {
-            popup.dismiss()
-            startReading(s)
-        }
-        label.measure(0, 0)
-        val x = (rawX - label.measuredWidth / 2).toInt().coerceAtLeast((8 * d).toInt())
-        val y = (rawY - label.measuredHeight - 28 * d).toInt().coerceAtLeast(sLoc[1])
+        bubble.measure(0, 0)
+        val x = (rawX - bubble.measuredWidth / 2).toInt().coerceIn(dp(8), (resources.displayMetrics.widthPixels - bubble.measuredWidth - dp(8)).coerceAtLeast(dp(8)))
+        val y = (rawY - bubble.measuredHeight - 28 * d).toInt().coerceAtLeast(sLoc[1])
         jumpPopup = popup
         popup.showAtLocation(scroll, Gravity.NO_GRAVITY, x, y)
-        pageView.postDelayed({ if (jumpPopup === popup) popup.dismiss() }, 4000)
+        pageView.postDelayed({ if (jumpPopup === popup) popup.dismiss() }, if (note != null) 8000 else 5000)
+    }
+
+    // ---------- bookmarks & notes ----------
+
+    private var annotations: List<Annotation> = emptyList()
+    private var wasPlayingForMarks = false
+
+    private fun reloadAnnotations() {
+        annotations = bookId?.let { Annotations.list(this, it) } ?: emptyList()
+        refreshPageSpans()
+    }
+
+    private fun addBookmark(s: Int, e: Int) {
+        val id = bookId ?: return
+        Annotations.add(this, id, s, e, null)
+        Toast.makeText(this, "Bookmarked", Toast.LENGTH_SHORT).show()
+        reloadAnnotations()
+    }
+
+    private fun removeAnnotation(a: Annotation) {
+        val id = bookId ?: return
+        Annotations.remove(this, id, a)
+        reloadAnnotations()
+    }
+
+    /** New note on [s, e) (existing == null) or edit an existing one. */
+    private fun editNote(existing: Annotation?, s: Int = existing?.start ?: 0, e: Int = existing?.end ?: 0) {
+        val id = bookId ?: return
+        val d = resources.displayMetrics.density
+        val quote = text.substring(s, e).trim().let { if (it.length > 160) it.take(160) + "…" else it }
+        val input = android.widget.EditText(this).apply {
+            setText(existing?.note.orEmpty()); setSelection(text.length)
+            hint = "Your note"; minLines = 3; gravity = Gravity.TOP
+            setTextColor(th.text); setHintTextColor(th.dim)
+            backgroundTintList = ColorStateList.valueOf(th.accent)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding((22 * d).toInt(), (6 * d).toInt(), (22 * d).toInt(), 0)
+            addView(TextView(this@MainActivity).apply {
+                text = "“$quote”"; textSize = 13f; setTextColor(th.dim); typeface = Typeface.SERIF
+                setPadding(0, 0, 0, (8 * d).toInt())
+            })
+            addView(input)
+        }
+        Themes.dialog(this).setTitle(if (existing == null) "Add note" else "Edit note").setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val t = input.text.toString().trim()
+                when {
+                    t.isEmpty() && existing != null -> Annotations.remove(this, id, existing)
+                    t.isEmpty() -> {}
+                    existing != null -> Annotations.update(this, id, existing.copy(note = t))
+                    else -> Annotations.add(this, id, s, e, t)
+                }
+                reloadAnnotations()
+            }
+            .setNegativeButton("Cancel", null)
+            .apply { if (existing != null) setNeutralButton("Delete") { _, _ -> removeAnnotation(existing) } }
+            .show()
+        input.requestFocus()
+    }
+
+    /** Re-draw the page's marks (bookmarks, notes, left-off) without moving it. */
+    private fun refreshPageSpans() {
+        if (bookId == null || pages.isEmpty()) return
+        val y = scroll.scrollY
+        pageView.setText(styledPage(page), TextView.BufferType.SPANNABLE)
+        if (narrator.isPlaying && spoken.first in pages[page] until pageEnd(page)) highlightSpoken()
+        scroll.post { scroll.scrollTo(0, y) }
+    }
+
+    private fun sentenceAroundIn(offset: Int, lo: Int, hi: Int): Pair<Int, Int> {
+        fun isEnd(i: Int) = text[i] == '\n' ||
+            (text[i] in ".!?…" && (i + 1 >= text.length || text[i + 1].isWhitespace() || text[i + 1] in "\"'”’»)"))
+        var s = offset.coerceIn(lo, hi - 1)
+        while (s > lo && !isEnd(s - 1)) s--
+        while (s < hi && (text[s].isWhitespace() || text[s] in "\"'”’»)")) s++
+        var e = offset.coerceIn(lo, hi - 1)
+        while (e < hi && !isEnd(e)) e++
+        while (e < hi && text[e] != '\n' && !text[e].isWhitespace()) e++
+        return s to e
     }
 
     /** Sentence containing [offset], clamped to the current chapter. */
@@ -290,7 +419,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         icon(2, 0, "Library", R.drawable.ic_library)
         icon(12, 1, "Search", R.drawable.ic_search)
-        icon(5, 2, "Chapters", R.drawable.ic_toc)
+        icon(5, 2, "Contents", R.drawable.ic_toc)
         icon(7, 3, "Full screen", R.drawable.ic_fullscreen)
         icon(11, 4, "Settings", R.drawable.ic_settings)
         return true
@@ -344,6 +473,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                 runOnUiThread { openBook(id) }
             } catch (t: Throwable) {
                 runOnUiThread {
+                    AppLog.e("Import", "open-with import failed", t)
                     Toast.makeText(this, "Could not open book: ${t.message}", Toast.LENGTH_LONG).show()
                     updateHeader()
                 }
@@ -352,7 +482,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     private fun openBook(id: String) {
-        val loaded = BookParser.load(booksDir, id) ?: return showEmpty()
+        AppLog.i("Reader", "open book $id")
+        val loaded = BookParser.load(booksDir, id) ?: return showEmpty().also { AppLog.e("Reader", "book $id missing") }
         narrator.stop()
         saveProgress()
         bookId = id
@@ -368,10 +499,13 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             ?: LangDetect.detect(text, prefs.getString("langtag_$id", null)).also { prefs.edit().putString("lang2_$id", it).apply() }
         narrator.voiceId = Voices.resolve(this, id, bookLang).id
         narrator.pronunciations = Pronunciations.rules(this, id)
+        annotations = Annotations.list(this, id)
+        AppLog.i("Reader", "book $id: ${text.length} chars, ${book.chapters.size} chapters, lang $bookLang, voice ${narrator.voiceId}")
         showPage(pageOf(readPos))
         scrollToOffset(readPos, force = true)
         updateHeader()
         onPlaybackChanged()
+        prefetchHere()
     }
 
     private fun showEmpty() {
@@ -395,6 +529,38 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             .putExtra(SettingsActivity.EXTRA_SECTION, section)
             .putExtra(SettingsActivity.EXTRA_BOOK_ID, bookId)
             .putExtra(SettingsActivity.EXTRA_BOOK_LANG, bookLang), REQ_SETTINGS)
+    }
+
+    private var startAfterBatteryPrompt: Int? = null
+
+    /** First live reading in a book: mention heat/battery and point at pre-loading. Nothing plays until a choice. */
+    private fun showLiveTip(from: Int) {
+        val id = bookId ?: return
+        fun seen() = prefs.edit().putBoolean("live_tip_$id", true).apply()
+        val restricted = !Background.unrestricted(this)
+        Themes.dialog(this).setTitle("Reading aloud, live")
+            .setMessage("The voice is made on your phone as it reads. Over long sessions that can warm the phone up and use " +
+                "more battery, and a warm phone (or a locked screen) makes the voice slower to prepare.\n\n" +
+                "To avoid that, pre-load chapters: the audio is made once ahead of time, then plays with no loading." +
+                if (restricted) "\n\nYour phone also slows this app down a lot with the screen off. Allowing unrestricted battery use helps." else "")
+            .setPositiveButton("Read aloud") { _, _ -> seen(); startReading(from) }
+            .setNegativeButton("Pre-load chapters") { _, _ -> seen(); openRenders() }
+            .apply {
+                if (restricted) setNeutralButton("Allow") { _, _ ->
+                    seen()
+                    startAfterBatteryPrompt = from   // start once you're back from the system prompt
+                    Background.request(this@MainActivity)
+                }
+            }
+            .show()
+    }
+
+    /** Pre-made audio for this book, starting from the chapter on screen. */
+    private fun openRenders() {
+        val id = bookId ?: return
+        startActivity(Intent(this, RendersActivity::class.java)
+            .putExtra(RendersActivity.EXTRA_BOOK, id)
+            .putExtra(RendersActivity.EXTRA_CHAPTER, chapterAt(pages[page]).coerceAtLeast(0)))
     }
 
     private fun showLibrary(exitOnBack: Boolean = false) {
@@ -435,17 +601,91 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         return "$unit ${p + 1} of ${pages.size}  ·  $pct%"
     }
 
-    private fun showChapters() {
+    /** Contents: Chapters / Bookmarks / Notes, tap to jump. */
+    private fun showChapters(tab: Int = 0) {
         if (bookId == null) return
-        if (book.chapters.isEmpty()) return Toast.makeText(this, "No chapters found in this book", Toast.LENGTH_SHORT).show()
-        val titles = book.chapters.mapIndexed { i, c -> "${i + 1}.  ${c.title}" }.toTypedArray()
-        Themes.dialog(this).setTitle("Chapters")
-            .setSingleChoiceItems(titles, chapterAt(pages[page])) { d, i ->
-                d.dismiss()
-                userTurnPage(pageOf(book.chapters[i].start))
+        val d = resources.displayMetrics.density
+        fun dp(v: Int) = (v * d).toInt()
+        lateinit var dialog: android.app.AlertDialog
+        val listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(18), dp(4), dp(18), dp(8)) }
+        val names = listOf("Chapters", "Bookmarks (${annotations.count { !it.isNote }})", "Notes (${annotations.count { it.isNote }})")
+        var current = tab
+
+        fun row(title: CharSequence, sub: String?, selected: Boolean, onClick: () -> Unit) = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), dp(10))
+            if (selected) setBackgroundColor(th.highlight)
+            addView(TextView(this@MainActivity).apply { text = title; textSize = 15f; setTextColor(th.text); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
+            if (sub != null) addView(TextView(this@MainActivity).apply { text = sub; textSize = 12f; setTextColor(th.dim); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
+            setOnClickListener { onClick() }
+        }
+        fun jump(pos: Int) {
+            dialog.dismiss()
+            if (narrator.isPlaying) follow = false
+            val p = pageOf(pos)
+            if (p != page) showPage(p)
+            pageView.post {
+                val layout = pageView.layout ?: return@post
+                val y = layout.getLineTop(layout.getLineForOffset((pos - pages[page]).coerceIn(0, pageView.text.length)))
+                scroll.smoothScrollTo(0, (y - scroll.height / 3).coerceAtLeast(0))
             }
+            updateJumpBack()
+        }
+        fun snippet(a: Annotation) = text.substring(a.start, a.end).trim().replace('\n', ' ').let { if (it.length > 140) it.take(140) + "…" else it }
+        fun chapterOf(pos: Int) = book.chapters.getOrNull(chapterAt(pos))?.title
+
+        fun fill() {
+            listBox.removeAllViews()
+            for (i in 0 until tabs.childCount) (tabs.getChildAt(i) as TextView).let { c ->
+                val on = i == current
+                c.setTextColor(if (on) th.onAccent else th.text)
+                c.background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); if (on) setColor(th.accent) else setStroke(dp(1), th.dim) }
+            }
+            when (current) {
+                0 -> if (book.chapters.isEmpty()) listBox.addView(row("No chapters found in this book", null, false) {})
+                     else book.chapters.forEachIndexed { i, c ->
+                         listBox.addView(row("${i + 1}.  ${c.title}", null, i == chapterAt(pages[page])) { jump(c.start) })
+                     }
+                1 -> {
+                    val marks = annotations.filter { !it.isNote }
+                    if (marks.isEmpty()) listBox.addView(row("No bookmarks yet", "Tap a sentence and choose 🔖 Bookmark.", false) {})
+                    marks.forEach { a -> listBox.addView(row(snippet(a), chapterOf(a.start), false) { jump(a.start) }.apply {
+                        setOnLongClickListener { removeAnnotation(a); dialog.dismiss(); showChapters(1); true }
+                    }) }
+                }
+                else -> {
+                    val notes = annotations.filter { it.isNote }
+                    if (notes.isEmpty()) listBox.addView(row("No notes yet", "Tap a sentence (or select text) and choose ✎ Note.", false) {})
+                    notes.forEach { a ->
+                        val title = SpannableString(a.note!!).apply { setSpan(StyleSpan(Typeface.BOLD), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
+                        listBox.addView(row(title, "“${snippet(a)}”" + (chapterOf(a.start)?.let { " · $it" } ?: ""), false) { jump(a.start) }.apply {
+                            setOnLongClickListener { dialog.dismiss(); editNote(a); true }
+                        })
+                    }
+                }
+            }
+            if (current > 0 && annotations.any { (it.isNote) == (current == 2) }) listBox.addView(TextView(this).apply {
+                text = if (current == 1) "Hold a bookmark to remove it." else "Hold a note to edit it."
+                textSize = 12f; setTextColor(th.dim); setPadding(dp(22), dp(10), dp(22), dp(4))
+            })
+        }
+        names.forEachIndexed { i, n -> tabs.addView(TextView(this).apply {
+            text = n; textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(8), dp(7), dp(8), dp(7))
+            setOnClickListener { current = i; fill() }
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) }) }
+        fill()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(tabs)
+            addView(ScrollView(this@MainActivity).apply { addView(listBox) },
+                LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.55).toInt()))
+        }
+        dialog = Themes.dialog(this).setTitle("Contents").setView(content)
+            .setNeutralButton("Audio files") { _, _ -> openRenders() }
             .setNegativeButton("Close", null)
-            .show()
+            .create()
+        dialog.show()
     }
 
     private fun pageOf(offset: Int): Int {
@@ -462,6 +702,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         scroll.scrollTo(0, 0)
         pageLabel.text = labelFor(page)
         updateHeader()
+        updateAudioChip()
         for ((id, enabled) in listOf(R.id.prev to (page > 0), R.id.next to (page < pages.size - 1))) {
             findViewById<View>(id).apply { isEnabled = enabled; alpha = if (enabled) 1f else 0.3f }
         }
@@ -476,6 +717,19 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             val s = maxOf(st[i], start)
             val e = minOf(st[i + 1], end)
             if (e > s) sp.setSpan(StyleSpan(st[i + 2]), s - start, e - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        // bookmarks (accent tint), notes (warm tint)
+        val bookmarkTint = Themes.mix(th.bg, th.accent, if (th.light) 0.22f else 0.25f)
+        val noteTint = Themes.mix(th.bg, 0xFFE8C36A.toInt(), if (th.light) 0.45f else 0.3f)
+        for (a in annotations) {
+            val s0 = maxOf(a.start, start); val e0 = minOf(a.end, end)
+            if (e0 <= s0) continue
+            sp.setSpan(BackgroundColorSpan(if (a.isNote) noteTint else bookmarkTint), s0 - start, e0 - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        // where you left off: the exact sentence, underlined, while not reading
+        if (!narrator.isPlaying && readPos in start until end && readPos > 0) {
+            val (ls, le) = sentenceAroundIn(readPos, start, end)
+            if (le > ls) sp.setSpan(android.text.style.UnderlineSpan(), ls - start, le - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         for (c in book.chapters) {
             if (c.start < start || c.start >= end) continue
@@ -560,6 +814,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (narrator.isPlaying) {
             narrator.stop()
             onPlaybackChanged()
+            prefetchHere()
             return
         }
         // resume from the saved spot if it's on screen, otherwise from the top of what you're looking at
@@ -569,11 +824,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private fun startReading(from: Int) {
         if (bookId == null) return
+        AppLog.i("Reader", "read from $from (voice ${narrator.voiceId}, speed ${narrator.speed}, phrasing ${narrator.phrasing})")
         if (offerVoiceForBookLanguage { startReading(from) }) return
         follow = true
         readPos = from
         saveProgress()
-        narrator.start(text, from)
+        val file = Renders.playableAt(this, bookId!!, from)
+        // first live reading in this book: ask first, play only after a choice
+        if (file == null && !prefs.getBoolean("live_tip_$bookId", false)) { showLiveTip(from); return }
+        if (file != null) narrator.playRender(file, text, from) else narrator.start(text, from)
         onPlaybackChanged()
         onBuffering(true)
     }
@@ -585,6 +844,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         playBtn.setImageResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play)
         playBtn.contentDescription = if (playing) "Stop reading" else "Read aloud"
         if (!playing) { onBuffering(false); follow = true; spoken = -1 to -1 }
+        if (playing != wasPlayingForMarks) { wasPlayingForMarks = playing; refreshPageSpans() }   // left-off underline
         updateJumpBack()
         if (playing) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else {
@@ -615,6 +875,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         saveProgress()
         spoken = start to end
         if (mediaActive && chapterAt(start) != mediaChapter) syncMedia()
+        // screen off / app in the background: nothing is drawn (smooth scrolls never run), so just note the
+        // position and catch up in onResume
+        if (!visible) return
         if (!follow) {
             // you're browsing: keep the highlight in sync if it's on this chapter, but don't move the view
             if (start in pages[page] until pageEnd(page)) highlightSpoken() else (pageView.text as? Spannable)?.removeSpan(highlight)
@@ -664,6 +927,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     override fun onReady() = updateHeader()
 
     override fun onError(msg: String) {
+        AppLog.e("Reader", msg)
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
         narrator.stop()
         onPlaybackChanged()
@@ -682,6 +946,59 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         prefs.edit().putFloat("speed", v).apply()
         updateSpeedChip()
         restartIfPlaying()
+    }
+
+    /** Player-bar shortcut to pre-made audio, showing what's happening for this book. */
+    private val audioChipTick = object : Runnable {
+        override fun run() { updateAudioChip(); if (RenderManager.isBusy) audioChip.postDelayed(this, 1000) }
+    }
+
+    private fun updateAudioChip() {
+        if (!::audioChip.isInitialized) return
+        val id = bookId
+        audioChip.visibility = if (id == null) View.GONE else View.VISIBLE
+        if (id == null) return
+        val making = RenderManager.current?.takeIf { it.render.bookId == id }
+        val here = if (pages.isNotEmpty()) Renders.playableAt(this, id, pages[page]) else null
+        val (label, icon) = when {
+            making != null -> "Making ${(making.fraction * 100).toInt()}%" to R.drawable.ic_download
+            here != null -> "Audio file" to R.drawable.ic_play
+            else -> "Pre-load" to R.drawable.ic_download
+        }
+        audioChip.text = label
+        val d = getDrawable(icon)?.mutate()?.apply {
+            setTint(th.accent)
+            val px = (15 * resources.displayMetrics.density).toInt(); setBounds(0, 0, px, px)
+        }
+        audioChip.setCompoundDrawables(d, null, null, null)
+        audioChip.contentDescription = when {
+            making != null -> "Audio file being made, ${(making.fraction * 100).toInt()} percent. Open audio files"
+            here != null -> "This chapter plays from an audio file. Open audio files"
+            else -> "Pre-load audio for this book"
+        }
+        audioChip.removeCallbacks(audioChipTick)
+        if (making != null) audioChip.postDelayed(audioChipTick, 1000)
+    }
+
+    private var visible = false
+
+    override fun onResume() {
+        super.onResume()
+        visible = true
+        startAfterBatteryPrompt?.let { startAfterBatteryPrompt = null; startReading(it) }
+        AppLog.i("Reader", "app visible · generation speed ${"%.2f".format(narrator.currentRtf)}x realtime cost")
+        updateAudioChip()
+        // back from a locked screen while reading: jump to where the voice is now
+        if (narrator.isPlaying && !narrator.isPreviewing && follow && spoken.first >= 0 && pages.isNotEmpty()) {
+            if (pageOf(spoken.first) != page) showPage(pageOf(spoken.first))
+            highlightSpoken()
+            pageView.post {
+                val layout = pageView.layout ?: return@post
+                val y = layout.getLineTop(layout.getLineForOffset((spoken.first - pages[page]).coerceIn(0, pageView.text.length)))
+                scroll.scrollTo(0, (y + pageView.paddingTop - scroll.height / 3).coerceAtLeast(0))
+            }
+        }
+        updateJumpBack()
     }
 
     private fun updateSpeedChip() {
@@ -794,6 +1111,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         pageLabel.setTextColor(th.dim)
         speedChip.setTextColor(th.accent)
+        audioChip.background = GradientDrawable().apply {
+            cornerRadius = 50f
+            setStroke((1.2f * resources.displayMetrics.density).toInt(), th.accent)
+        }
+        audioChip.setTextColor(th.accent)
+        updateAudioChip()
         speedChip.background = GradientDrawable().apply {
             cornerRadius = 50f
             setStroke((1.2f * resources.displayMetrics.density).toInt(), th.accent)
@@ -1066,7 +1389,13 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (narrator.isPlaying) {
             narrator.stop()
             onPlaybackChanged()
+            prefetchHere()
         }
+    }
+
+    /** Paused or just opened: keep preparing audio from where reading would resume. */
+    private fun prefetchHere() {
+        if (bookId != null && !narrator.isPlaying) narrator.prefetch(text, readPos)
     }
 
     override fun remoteSkip(dir: Int) = runOnUiThread { skipSentence(dir, fromSaved = true) }
@@ -1109,6 +1438,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     override fun onPause() {
         super.onPause()
+        visible = false
+        AppLog.i("Reader", "app hidden (background / screen off) · generation speed ${"%.2f".format(narrator.currentRtf)}x realtime cost")
         saveProgress()
     }
 
@@ -1116,7 +1447,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (NarrationService.controller === this) NarrationService.controller = null
         releaseAudio()
         stopService(Intent(this, NarrationService::class.java))
-        narrator.release()
+        if (narrator.isRendering) narrator.stop() else narrator.release()
         super.onDestroy()
     }
 }

@@ -93,9 +93,20 @@ class LibraryActivity : Activity() {
                 })
             }, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER).apply { leftMargin = pad * 2; rightMargin = pad * 2 })
         }
+        // friend build only: Baguera on top of the library (the resource doesn't exist in the personal build)
+        val headerRes = resources.getIdentifier("cat_header", "drawable", packageName)
+        val content: View = if (headerRes == 0) grid else LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(ImageView(this@LibraryActivity).apply {
+                setImageResource(headerRes)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                contentDescription = "Baguera"
+            }, LinearLayout.LayoutParams(-1, (resources.displayMetrics.widthPixels / 2.4f).toInt().coerceAtMost((220 * d).toInt())))
+            addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
+        }
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(th.bg)
-            addView(grid)
+            addView(content)
             addView(empty, FrameLayout.LayoutParams(-1, -1))
             addView(importing, FrameLayout.LayoutParams(-1, -1))
         })
@@ -116,8 +127,12 @@ class LibraryActivity : Activity() {
 
     private fun bookOptions(b: BookStore.Entry) {
         Themes.dialog(this).setTitle(b.title)
-            .setItems(arrayOf("Open", "Remove from library")) { _, which ->
-                if (which == 0) open(b.id) else confirmDelete(b)
+            .setItems(arrayOf("Open", "Audio files", "Remove from library")) { _, which ->
+                when (which) {
+                    0 -> open(b.id)
+                    1 -> startActivity(Intent(this, RendersActivity::class.java).putExtra(RendersActivity.EXTRA_BOOK, b.id))
+                    else -> confirmDelete(b)
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -136,6 +151,7 @@ class LibraryActivity : Activity() {
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menu.add(0, 2, 1, "Send debug log")
         val add = menu.add(0, 1, 0, "Add book").setIcon(R.drawable.ic_add)
         add.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS or MenuItem.SHOW_AS_ACTION_WITH_TEXT)
         add.icon?.mutate()?.setTint(th.text)
@@ -155,6 +171,7 @@ class LibraryActivity : Activity() {
                 type = "*/*"   // format is detected from the file contents (mobi/fb2/azw3 are often mislabeled)
             }, REQ_IMPORT)
             android.R.id.home -> finish()
+            2 -> AppLog.share(this)
             else -> return super.onOptionsItemSelected(item)
         }
         return true
@@ -171,11 +188,14 @@ class LibraryActivity : Activity() {
         importing.visibility = View.VISIBLE
         thread {
             try {
+                AppLog.i("Import", "importing $name")
                 val id = BookStore.import(this, uri)
+                AppLog.i("Import", "imported $name as $id")
                 runOnUiThread { open(id) }
             } catch (t: Throwable) {
                 runOnUiThread {
                     importing.visibility = View.GONE
+                    AppLog.e("Import", "import of $name failed", t)
                     Toast.makeText(this, "Could not import: ${t.message}", Toast.LENGTH_LONG).show()
                 }
             }
@@ -250,7 +270,8 @@ class LibraryActivity : Activity() {
                     setPadding(0, (6 * d).toInt(), 0, 0)
                 })
                 addView(TextView(this@LibraryActivity).apply {
-                    text = listOfNotNull(b.author, if (b.progress > 0) "${b.progress}%" else "New").joinToString("  ·  ")
+                    val audio = if (Renders.list(this@LibraryActivity, b.id).any { it.ready }) "🎧" else null
+                    text = listOfNotNull(b.author, if (b.progress > 0) "${b.progress}%" else "New", audio).joinToString("  ·  ")
                     setTextColor(th.dim)
                     textSize = 11.5f
                     maxLines = 1

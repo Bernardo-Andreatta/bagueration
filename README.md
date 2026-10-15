@@ -11,7 +11,11 @@ An Android e-reader that reads your books aloud with natural-sounding voices, en
 - **Detects each book's language** and suggests voices in that language first.
 - **Tuning**: speed, pauses between sentences and at commas, trimming of mid-sentence hesitations, phrasing length, voice blends, per-voice recommended settings and your own saved presets.
 - **Pronunciation fixes** for names the voice gets wrong, per book or for all books.
-- **Reading**: chapter-per-page scrolling, chapter list, search (chapter or whole book, accent-insensitive), five themes plus custom colors, font, size and spacing.
+- **Pre-made audio files**: render chapters (or a set length) ahead of time with any voice and settings. They're compressed AAC with a sentence sync map, play with no loading and keep the highlight in step. Several files per book are fine.
+- **Smart buffering**: reads ahead by time (scaled to the phone's memory), keeps preparing while paused, and caches generated audio on disk.
+- **Bookmarks, notes and a "left off here" marker**, plus a Contents panel (chapters, bookmarks, notes).
+- **Reading**: chapter-per-page scrolling, search (chapter or whole book, accent-insensitive), five themes plus custom colors, font, size and spacing.
+- **Debug log** that can be shared from Settings, covering crashes, native engine crashes and low-memory kills.
 
 ## Building
 
@@ -19,8 +23,10 @@ The voice model (~330 MB) and speech engine are too large for git, so they're do
 
 ```bash
 tools/setup.sh          # downloads sherpa-onnx + Kokoro v1.0, bakes the voice blends
-./gradlew assembleDebug  # app/build/outputs/apk/debug/app-debug.apk
+./gradlew assemblePersonalDebug  # app/build/outputs/apk/personal/debug/
 ```
+
+Build the `personal` variant (`./gradlew assemblePersonalDebug`). There's also a private `friend` variant with its own icon and library header, but its images aren't in this repo.
 
 Requirements: JDK 17, Android SDK 35, Python 3 (for the blend step), about 1 GB of free disk space. The phone needs Android 8+ (arm64) and about 1 GB of free memory while reading aloud.
 
@@ -34,6 +40,8 @@ Requirements: JDK 17, Android SDK 35, Python 3 (for the blend step), about 1 GB 
 | `BookParser.kt`, `PdfParser.kt`, `MobiReader.kt` | Turning each format into text + chapters + styles |
 | `SettingsActivity.kt`, `LibraryActivity.kt` | Settings and the cover library |
 | `NarrationService.kt` | Media controls, background playback |
+| `Renders.kt`, `RenderManager.kt`, `RendersActivity.kt` | Pre-made audio files: AAC writer, sync map, background job queue |
+| `Annotations.kt`, `Search.kt`, `Pronunciations.kt`, `AppLog.kt` | Bookmarks and notes, search, pronunciation fixes, debug log |
 | `tools/` | Model setup and the voice-blend baking script |
 
 ## Credits

@@ -81,6 +81,13 @@ class SettingsActivity : Activity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(8), dp(14), dp(28)) }
         col.addView(voiceCard())
         col.addView(pausesCard())
+        if (bookId != null) col.addView(card("Audio files") {
+            val n = Renders.list(this@SettingsActivity, bookId!!).count { it.ready }
+            addView(row("Audio files for this book", if (n == 0) "none yet" else "$n ready") {
+                startActivity(android.content.Intent(this@SettingsActivity, RendersActivity::class.java).putExtra(RendersActivity.EXTRA_BOOK, bookId))
+            })
+            addView(hintView("Make audio ahead of time for a few chapters: it plays with no loading, even on a warm phone."))
+        })
         if (bookId != null) col.addView(pronunciationsCard())
         col.addView(appearanceCard().also { appearanceCard = it })
         col.addView(TextView(this).apply {
@@ -525,6 +532,11 @@ class SettingsActivity : Activity() {
     }
 
     private fun aboutCard() = card("About") {
+        addView(TextView(this@SettingsActivity).apply {
+            text = "Send debug log"; textSize = 14f; setTextColor(th.accent)
+            setPadding(0, dp(4), 0, dp(10))
+            setOnClickListener { AppLog.share(this@SettingsActivity) }
+        })
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""
         addView(TextView(this@SettingsActivity).apply {
             text = "bagueration $version\nWorks offline. Voices by Kokoro (built in) and Piper (downloads), running on sherpa-onnx."

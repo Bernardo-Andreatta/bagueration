@@ -11,9 +11,24 @@ android {
         applicationId = "com.bernardo.ereader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 23
-        versionName = "4.0"
+        versionCode = 30
+        versionName = "4.7"
         ndk { abiFilters += listOf("arm64-v8a") }
+    }
+
+    // "friend" = the copy shared with a friend: Baguera (the cat behind the name) as icon and library header
+    flavorDimensions += "audience"
+    productFlavors {
+        create("personal") {
+            dimension = "audience"
+            manifestPlaceholders["appIcon"] = "@android:drawable/ic_menu_agenda"
+            manifestPlaceholders["appRoundIcon"] = "@android:drawable/ic_menu_agenda"
+        }
+        create("friend") {
+            dimension = "audience"
+            manifestPlaceholders["appIcon"] = "@mipmap/ic_launcher"
+            manifestPlaceholders["appRoundIcon"] = "@mipmap/ic_launcher_round"
+        }
     }
 
     buildTypes {

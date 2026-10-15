@@ -23,4 +23,4 @@ echo "Baking voice blends…"
 python3 -m venv "$WORK/venv"
 "$WORK/venv/bin/pip" -q install numpy onnx
 "$WORK/venv/bin/python" tools/bake_blends.py "$SRC" "$ASSETS"
-echo "Ready. Build with: ./gradlew assembleDebug"
+echo "Ready. Build with: ./gradlew assemblePersonalDebug"
