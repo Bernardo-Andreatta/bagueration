@@ -235,7 +235,7 @@ class SettingsActivity : Activity() {
             soundChanged(regenerate = true)
             build()
         })
-        addView(hintView("How much the voice reads in one go. Longer flows more naturally between sentences but takes a moment longer to start."))
+        addView(hintView("How much the voice reads in one go when \"Pause at commas\" is off. With it on, every sentence gets its own exact pause instead."))
         slider("Between sentences", 100f, 1200f, 50f, prefs.getInt("pause", 400).toFloat(), default = rec().pauseMs.toFloat(),
             format = { "${it.toInt()} ms" },
             hint = "A bit longer after ? and !, and at the end of a paragraph.") { v ->
@@ -246,7 +246,7 @@ class SettingsActivity : Activity() {
 
         lateinit var commaSlider: View
         addView(switch("Pause at commas", prefs.getBoolean("comma_pauses", true),
-            "A short breath at commas in long sentences.") { on ->
+            "Exact pauses at commas, dashes, \"...\" and between sentences. Off: the voice keeps its own timing, which often runs straight through them.") { on ->
             prefs.edit().putBoolean("comma_pauses", on).apply()
             narrator?.commaPauses = on
             commaSlider.alpha = if (on) 1f else 0.4f

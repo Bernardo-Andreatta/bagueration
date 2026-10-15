@@ -44,7 +44,39 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         /** The app's narrator, for the settings screen (live changes + preview). */
         @Volatile var instance: Narrator? = null
         private const val MAX_SENTENCE = 300
-        private const val MIN_CLAUSE_WORDS = 3
+        /** Smallest clause cut off at a comma/dash: "Well," may stand alone, but what follows needs 2+ words. */
+        private const val MIN_CLAUSE_WORDS_BEFORE = 1
+        private const val MIN_CLAUSE_WORDS_AFTER = 2
+        private const val CLOSERS = "\"'”’»)]"
+        /** Bump when the way audio is made changes, so cached audio from before isn't reused. */
+        private const val AUDIO_VERSION = 2
+        private val SPACED_ELLIPSIS = Regex("\\.( \\.){2,}")
+        private val FOOTNOTE_MARK = Regex("(?<=\\p{L}[\"'”’»)]?)(\\[\\d{1,3}]|[¹²³⁴⁵⁶⁷⁸⁹⁰]+|\\*+)(?=[\\s\\p{P}]|$)")
+        private val DOUBLE_HYPHEN = Regex("\\s*--+\\s*")
+
+        private val VOWEL_GROUPS = Regex("[aeiouyàáâãäåèéêëìíîïòóôõöùúûüæœ]+", RegexOption.IGNORE_CASE)
+        private val WORD = Regex("[\\p{L}]+")
+
+        /** Rough syllable count (vowel groups; ~3 letters per syllable for scripts without Latin vowels). */
+        fun syllables(t: String): Int {
+            var n = 0
+            for (m in WORD.findAll(t)) {
+                val w = m.value.lowercase()
+                var g = VOWEL_GROUPS.findAll(w).count()
+                if (g == 0) g = (w.length + 2) / 3
+                else if (g > 1 && w.endsWith('e') && !w.endsWith("le") && !w.endsWith("ee")) g--   // silent e
+                n += maxOf(1, g)
+            }
+            return n + 2 * Regex("\\d+").findAll(t).count()
+        }
+
+        /**
+         * Kokoro drags very short inputs: alone, "Yes." or "Well," come out ~1.5-3x longer than the same word inside a
+         * sentence (measured on US/UK, male/female voices), while 5+ syllables are steady. Speeding those up brings them
+         * back to their in-sentence length.
+         */
+        fun shortInputBoost(text: String): Float =
+            1f + 0.7f * kotlin.math.exp(-(maxOf(syllables(text), 1) - 1) / 1.6f)
 
         /** Abbreviations whose period doesn't end a sentence (lowercase, no dot). */
         private val ABBREVIATIONS = setOf(
@@ -104,13 +136,16 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     @Volatile var speed = 1.0f
     /** Silence after a sentence; scaled by punctuation (commas less, ?! more, paragraphs double). */
     @Volatile var pauseMs = 400
-    /** Split long sentences at commas for a real pause there. Off = whole sentences, Kokoro's own comma timing. */
+    /**
+     * Exact pauses: cut at sentence ends, commas, dashes and "..." and insert our own silence there. Off = [phrasing]
+     * decides what goes to the model, with Kokoro's own (much shorter, uneven) timing inside.
+     */
     @Volatile var commaPauses = true
     /** Silence at a comma (; and : get 1.5x). */
     @Volatile var commaPauseMs = 180
     /** Gaps inside a phrase longer than this are shortened to it. 0 = off. */
     @Volatile var maxGapMs = 90
-    /** How much text goes to the model at once: 1 = a sentence, 2 = up to 3 sentences, 3 = up to a paragraph. */
+    /** With [commaPauses] off, how much text goes to the model at once: 1 = a sentence, 2 = up to 3 sentences, 3 = up to a paragraph. */
     @Volatile var phrasing = 2
     /** Pronunciation fixes for the current book (word -> how to say it), applied before anything else. */
     @Volatile var pronunciations: List<Pair<Regex, String>> = emptyList()
@@ -367,7 +402,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     private var cacheSamples = 0L
     private val cacheBudget: Long get() = (baseAheadMs * 3 / 2 + 180_000L) / 1000 * 24_000   // floats in memory
 
-    private fun cacheKey(text: String, v: String, sp: Float, gap: Int = maxGapMs) = "$v|$sp|$gap|$text"
+    private fun cacheKey(text: String, v: String, sp: Float, gap: Int = maxGapMs) = "$AUDIO_VERSION|$v|$sp|$gap|$text"
 
     /** Memory first, then the disk cache (which survives app restarts). */
     private fun cacheGet(key: String): Cached? {
@@ -485,6 +520,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                     val f = queue.take().f
                     val c = try { f.get() } catch (_: java.util.concurrent.CancellationException) { null } ?: continue
                     if (c === endMarker) break
+                    if (c.samples.isEmpty() && writer == null) continue   // silence before any audio: nothing to extend
                     if (writer == null) { rate = c.rate; writer = o.writerFor(rate) }
                     val base = writer.samplesWritten
                     val subs = if (c.subs.isEmpty()) listOf(Triple(c.start, c.end, 0f)) else c.subs
@@ -533,7 +569,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                     // longer phrasing: give the model several sentences (never across a paragraph) so it can
                     // carry intonation and timing from one sentence into the next
                     val sentences = arrayListOf(s to e0)
-                    if (cPhrasing > 1) {
+                    // with exact pauses on, every sentence end is a cut like a comma: inside one model call Kokoro leaves
+                    // anywhere from 0 to ~300 ms between sentences, which is what made the pacing feel uneven
+                    if (cPhrasing > 1 && !cCommaPauses) {
                         val (maxSentences, maxChars) = if (cPhrasing == 2) 3 to 300 else 8 to 480
                         while (sentences.size < maxSentences && !isParagraphEnd(e)) {
                             val next = nextSentence(e, MAX_SENTENCE) ?: break
@@ -543,10 +581,14 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         }
                     }
                     pos = e
-                    if ((s until e).none { text[it].isLetterOrDigit() }) continue
-                    // comma pauses: split at commas between clauses of 3+ words (exact pause, no word cuts, each clause
-                    // keeps its comma so the intonation still "continues"). Works with any phrasing: sentences without
-                    // commas still go to the model together.
+                    if ((s until e).none { text[it].isLetterOrDigit() }) {
+                        // a scene break ("* * *") on its own line: a longer silence instead of nothing
+                        if (isParagraphEnd(e)) queue.put(Item(FutureTask<Chunk?> { Chunk(s, e, FloatArray(0), 2f) }.also { it.run() }, cPause * 2L))
+                        continue
+                    }
+                    // exact pauses: split at commas, dashes and mid-sentence "..." (exact pause, no word cuts, each clause
+                    // keeps its mark so the intonation still "continues"). Left in one piece, Kokoro mostly runs straight
+                    // through them (0-130 ms).
                     val parts = clauses(s, e)
                     for ((k, part) in parts.withIndex()) {
                         val shown = text.substring(part.first, part.second).trim()
@@ -555,10 +597,15 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         val subs = sentences.filter { (a, b) -> b > part.first && a < part.second }.map { (a, b) ->
                             Triple(maxOf(a, part.first), b, (maxOf(a, part.first) - part.first) / pSpan)
                         }
-                        val sentence = speakable(shown, voiceInfo.lang)
-                        val factor = if (k < parts.size - 1) clausePause(shown) else sentencePause(shown, e)
-                        val v = "${voiceInfo.id}#$sid"; val sp = cSpeed
                         val isClause = k < parts.size - 1
+                        // a heading ("CHAPTER IV") has no full stop: give it one so the voice lands instead of trailing off
+                        val sentence = speakable(shown, voiceInfo.lang).let {
+                            if (!isClause && isParagraphEnd(e) && it.trimEnd { c -> c in CLOSERS }.lastOrNull()?.isLetterOrDigit() == true) "$it." else it
+                        }
+                        val factor = if (isClause) clausePause(shown) else sentencePause(shown, e)
+                        val v = "${voiceInfo.id}#$sid"; val sp = cSpeed
+                        // only measured on Kokoro; Piper voices are left at the chosen speed
+                        val genSpeed = if (voiceInfo.builtIn) sp * shortInputBoost(sentence) else sp
                         val key = cacheKey(sentence, v, sp, cGap)
                         // recently generated (heard or buffered ahead)? use it right away, no engine wait
                         // stay a set amount of listening time ahead (bigger on phones that generate slowly)
@@ -574,7 +621,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                 val eng = engineFor(voiceInfo)
                                 if (cancelled) return@submit null
                                 val t0 = System.nanoTime()
-                                val audio = eng.generate(sentence, sid, sp)
+                                val audio = eng.generate(sentence, sid, genSpeed)
                                 AppLog.i("Narrator", "gen ${(System.nanoTime() - t0) / 1_000_000}ms for " +
                                     "${audio.samples.size * 1000L / audio.sampleRate}ms audio, ${sentence.length} chars")
                                 val samples = squeezePauses(trimSilence(audio.samples, audio.sampleRate), audio.sampleRate, sentence)
@@ -613,9 +660,10 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             while (i < limit) {
                 val c = text[i]
                 if (c == '\n') { e = i; break }
-                if (c == '.' && isAbbreviation(i)) { i++; continue }
+                val spaced = if (c == '.') spacedEllipsisEnd(i) else -1   // ". . ."
+                if (c == '.' && spaced < 0 && isAbbreviation(i)) { i++; continue }
                 if (c == '.' || c == '!' || c == '?' || c == '…') {
-                    var j = i + 1
+                    var j = if (spaced > 0) spaced else i + 1
                     while (j < text.length && text[j] in ".!?…\"'”’»)]") j++
                     // a period followed by a lowercase letter / digit is probably an abbreviation ("Mr. smith", "3.5")
                     if (j >= text.length || (text[j].isWhitespace() && !nextIsLower(j))) { e = j; break }
@@ -636,58 +684,112 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             return s to e
         }
 
-        private fun lastPunct(clause: String) = clause.trimEnd().trimEnd { it in "\"'”’»)]" }.lastOrNull() ?: ' '
+        /** Index right after a spaced ellipsis ". . ." starting at [i], or -1. */
+        private fun spacedEllipsisEnd(i: Int): Int {
+            var k = i
+            var dots = 1
+            while (k + 2 < text.length && text[k + 1] == ' ' && text[k + 2] == '.') { k += 2; dots++ }
+            return if (dots >= 3) k + 1 else -1
+        }
+
+        private fun isEllipsisEnd(t: String) = t.endsWith("...") || t.endsWith("…") || t.endsWith(". .")
 
         /** Relative to commaPauseMs. */
-        private fun clausePause(clause: String) = when (lastPunct(clause)) {
-            ',' -> 1f
-            ';', ':' -> 1.5f
-            '—', '–', '-' -> 1.2f
-            else -> 0.35f
+        private fun clausePause(clause: String): Float {
+            val t = clause.trimEnd().trimEnd { it in CLOSERS }
+            if (isEllipsisEnd(t)) return 2f   // "I... I don't know"
+            return when (t.lastOrNull()) {
+                ',' -> 1f
+                ';', ':' -> 1.5f
+                '—', '–', '-' -> 1.2f
+                else -> 0.7f   // before a "(" aside
+            }
         }
 
         private fun sentencePause(clause: String, e: Int): Float {
-            val t = clause.trimEnd().trimEnd { it in "\"'”’»)]" }
+            val t = clause.trimEnd().trimEnd { it in CLOSERS }
+            val ellipsis = isEllipsisEnd(t)
             val f = when {
-                t.endsWith("...") || t.endsWith("…") -> 1.6f
+                ellipsis -> 1.6f
                 t.endsWith("?") || t.endsWith("!") -> 1.25f
                 t.endsWith(".") -> 1f
                 else -> 0.45f   // sentence cut at MAX_SENTENCE
             }
-            if (isParagraphEnd(e)) return maxOf(f, 2f)
-            // "Hello!", "Yes." — a full stop-length pause after one or two words sounds like a hiccup
             val words = t.split(' ').count { w -> w.any { it.isLetterOrDigit() } }
-            return if (words <= 2) minOf(f, 0.5f) else f
+            if (isParagraphEnd(e)) {
+                // a heading ("CHAPTER IV", "The Long Night") gets a little more room than a paragraph
+                val heading = t.lastOrNull()?.isLetterOrDigit() == true && words <= 8
+                return if (heading) 2.5f else maxOf(f, 2f)
+            }
+            // "He stopped. He turned." / "Yes? No?" — short sentences keep moving, a full pause after each drags
+            return if (words <= 2 && !ellipsis) minOf(f, 0.75f) else f
         }
 
         private fun clauses(s: Int, e: Int): List<Pair<Int, Int>> {
             if (!cCommaPauses) return listOf(s to e)
             fun words(a: Int, b: Int) = text.substring(a, b).split(' ', '\n').count { w -> w.any { it.isLetterOrDigit() } }
+            fun lastWord(a: Int, b: Int) = Regex("(\\w+)\\W*$").find(text.substring(a, b))?.groupValues?.get(1)?.lowercase()
+            fun firstWord(a: Int, b: Int) = Regex("^\\W*(\\w+)").find(text.substring(a, b))?.groupValues?.get(1)?.lowercase()
             val out = ArrayList<Pair<Int, Int>>()
             var start = s
             var i = s
             while (i < e) {
                 val c = text[i]
-                if (c == ',' || c == ';' || c == ':') {
-                    var j = i + 1
-                    while (j < e && text[j] in "\"'”’»)") j++
-                    // "1,000" has no space after the comma and stays together
-                    if (j < e && text[j].isWhitespace() && words(start, j) >= MIN_CLAUSE_WORDS && words(j, e) >= MIN_CLAUSE_WORDS) {
-                        out += start to j
-                        start = j
+                var cut = -1
+                var next = i + 1
+                when {
+                    c == ',' || c == ';' || c == ':' -> {
+                        var j = i + 1
+                        while (j < e && text[j] in CLOSERS) j++
+                        // "1,000" and "6:45" have no space after the mark and stay together
+                        if (j < e && text[j].isWhitespace()) cut = j
+                        next = j
                     }
-                    i = j
-                    continue
+                    // em dash anywhere; en dash or hyphen only with spaces around ("1914–1918", "north-south" stay); "--"
+                    c == '—' || (c in "–-" && text.getOrNull(i - 1) == ' ' && text.getOrNull(i + 1) == ' ') ||
+                        (c == '-' && text.getOrNull(i + 1) == '-') -> {
+                        var j = i + 1
+                        while (j < e && text[j] in "—–-") j++
+                        // "I—I can't" is a stammer, not a break
+                        if (lastWord(start, i) == null || lastWord(start, i) != firstWord(j, e)) cut = j
+                        next = j
+                    }
+                    // "..." / "…" / ". . ." inside a sentence ("It was late... far too late")
+                    c == '…' || (c == '.' && (text.startsWith("...", i) || spacedEllipsisEnd(i) > 0)) -> {
+                        var j = if (c == '.' && spacedEllipsisEnd(i) > 0) spacedEllipsisEnd(i) else i + 1
+                        while (j < e && text[j] in ".…") j++
+                        while (j < e && text[j] in CLOSERS) j++
+                        if (j < e && text[j].isWhitespace()) cut = j
+                        next = j
+                    }
+                    // before an aside in parentheses
+                    c == '(' && i > start && text[i - 1] == ' ' -> cut = i
                 }
-                i++
+                if (cut > 0 && words(start, cut) >= MIN_CLAUSE_WORDS_BEFORE && words(cut, e) >= MIN_CLAUSE_WORDS_AFTER) {
+                    out += start to cut
+                    start = cut
+                }
+                i = next
             }
             out += start to e
+            // a short dialogue tag stays with its quote: "Straight quotes," he said, | "are..."
+            var k = 1
+            while (k < out.size) {
+                val (a, b) = out[k]
+                val prev = text.substring(out[k - 1].first, out[k - 1].second).trimEnd()
+                if (words(a, b) <= 3 && text.substring(a, b).trim().firstOrNull()?.isLowerCase() == true && prev.lastOrNull()?.let { it in CLOSERS } == true) {
+                    out[k - 1] = out[k - 1].first to b
+                    out.removeAt(k)
+                } else k++
+            }
             return out
         }
 
         /** Text as it should be spoken: expand abbreviations the voice would otherwise trip over. */
         private fun speakable(t: String, lang: String): String {
-            var out = t
+            var out = t.replace(SPACED_ELLIPSIS, "…")
+                .replace(FOOTNOTE_MARK, "")      // "it[1]", "footnote*", "word²" were read out as "one" / "asterisk"
+                .replace(DOUBLE_HYPHEN, " — ")
             for ((re, say) in pronunciations) out = re.replace(out, Regex.escapeReplacement(say))
             for ((re, word) in SPOKEN_BY_LANG[lang].orEmpty()) out = re.replace(out, word)
             return out
@@ -830,7 +932,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                     }
                     val c = try { f.get() } catch (_: java.util.concurrent.CancellationException) { null } ?: continue
                     if (c === endMarker) break
-                    if (track != null && rate != c.rate) { track.run { stop(); release() }; track = null }
+                    if (c.samples.isEmpty() && track == null) continue   // a scene break before anything was played
+                    if (track != null && rate != c.rate && c.samples.isNotEmpty()) { track.run { stop(); release() }; track = null }
                     if (track == null) {
                         rate = c.rate
                         val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT)
