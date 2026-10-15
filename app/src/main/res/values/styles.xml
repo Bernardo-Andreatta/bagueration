@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="ReaderTheme" parent="@android:style/Theme.Material">
+        <item name="android:colorPrimary">@color/bar</item>
+        <item name="android:colorPrimaryDark">@color/bar</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bar</item>
+        <item name="android:statusBarColor">@color/bar</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/text_dim</item>
+        <item name="android:alertDialogTheme">@style/ReaderDialog</item>
+    </style>
+
+    <style name="ReaderDialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorBackground">@color/bar</item>
+        <item name="android:textColorPrimary">@color/text</item>
+    </style>
+</resources>

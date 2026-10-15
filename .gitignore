@@ -1,0 +1,15 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# too big for git — fetched/rebuilt by tools/setup.sh
+app/libs/*.aar
+app/src/main/assets/kokoro/
+
+# release output and listening tests
+dist/
+voice-samples/
+*.apk
