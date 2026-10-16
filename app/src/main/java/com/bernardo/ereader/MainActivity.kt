@@ -1260,8 +1260,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     // ---------- following the voice: the page moves only in the pauses between sentences ----------
 
-    /** Scroll position a glide is heading for, or -1 when the page is still. */
-    private var glideTarget = -1
+    private var followAnim: android.animation.ValueAnimator? = null
+    private val glideTarget get() = if (followAnim?.isRunning == true) 0 else -1
 
     /** Scroll position (px) that puts the middle of [start, end) a bit above the middle of the visible part. */
     private fun centeredOn(start: Int, end: Int): Int? {
@@ -1279,39 +1279,24 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     /**
-     * Glide the page to [target] over [ms]. The page's translation is animated, not the scroll position: a
-     * translation animation runs on the render thread, frame by frame, without the UI thread, which is what keeps it
-     * smooth while the voice is being made (synthesis keeps every core busy and the UI thread misses frames). When
-     * it lands, the scroll position takes over in the same frame. Tiny moves are skipped so the page doesn't twitch;
-     * a move of more than a screen is done at once.
+     * Glide the page to [target] over [ms]: the scroll position is animated, one small step a frame. The page only
+     * redraws when the scroll leaves the band it last drew (see PageView), so a frame costs almost nothing. Tiny
+     * moves are skipped so the page doesn't twitch; a move of more than a screen is done at once.
      */
     private fun glideTo(target: Int, ms: Long) {
         stopGliding()
         val diff = target - scroll.scrollY
         if (abs(diff) < 10 * resources.displayMetrics.density) return
         if (abs(diff) > scroll.height) { scroll.scrollTo(0, target); return }
-        glideTarget = target
-        pageView.translationY = 0f
-        pageView.animate().translationY(-diff.toFloat()).setDuration(ms)
-            .setInterpolator(android.view.animation.AccelerateDecelerateInterpolator())
-            .withEndAction {
-                if (glideTarget != target) return@withEndAction
-                glideTarget = -1
-                pageView.translationY = 0f
-                scroll.scrollTo(0, target)
-            }
-            .start()
+        followAnim = android.animation.ValueAnimator.ofInt(scroll.scrollY, target).apply {
+            duration = ms
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            addUpdateListener { scroll.scrollTo(0, it.animatedValue as Int) }
+            start()
+        }
     }
 
-    /** Stop a glide where it is: what was travelled becomes scroll position. */
-    private fun stopGliding() {
-        if (glideTarget < 0) return
-        glideTarget = -1
-        val moved = -pageView.translationY.toInt()
-        pageView.animate().cancel()
-        pageView.translationY = 0f
-        if (moved != 0) scroll.scrollTo(0, scroll.scrollY + moved)
-    }
+    private fun stopGliding() { followAnim?.cancel(); followAnim = null }
 
     /** The pause after a sentence began: bring the next sentence to the middle while nothing is being said. */
     override fun onGap(nextStart: Int, ms: Int) {
