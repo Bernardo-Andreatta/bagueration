@@ -1211,7 +1211,47 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         if (start !in pages[page] until pageEnd(page)) showPage(pageOf(start))
         highlightSpoken()
-        scrollToOffset(start)
+        scrollToSpoken(start, end)
+    }
+
+    /**
+     * Keep the whole sentence being read on screen, not just its first line: a long sentence that starts low on the
+     * page used to be read off the bottom. Scrolls when any of it is hidden, or when it starts in the bottom quarter.
+     */
+    private fun scrollToSpoken(start: Int, end: Int) {
+        pageView.post {
+            val layout = pageView.layout ?: return@post
+            val a = (start - pages[page]).coerceIn(0, pageView.text.length)
+            val b = (end - pages[page] - 1).coerceIn(a, pageView.text.length)
+            val top = layout.getLineTop(layout.getLineForOffset(a)) + pageView.paddingTop
+            val bottom = layout.getLineBottom(layout.getLineForOffset(b)) + pageView.paddingTop
+            val viewTop = scroll.scrollY
+            val viewBottom = viewTop + scroll.height
+            if (top < viewTop || bottom > viewBottom || top > viewTop + scroll.height * 0.75) {
+                // a sentence taller than the screen starts at the top; otherwise a quarter of the way down
+                val lead = if (bottom - top > scroll.height * 0.7) 0 else scroll.height / 4
+                lastAutoScroll = android.os.SystemClock.uptimeMillis()
+                scroll.smoothScrollTo(0, (top - lead).coerceAtLeast(0))
+            }
+        }
+    }
+
+    private var lastAutoScroll = 0L
+
+    /** Inside a sentence taller than the screen: bring the word being heard back into view. */
+    private fun scrollToWord(start: Int) {
+        // not while the sentence scroll is still animating (the view would be measured mid-way and scrolled again)
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastAutoScroll < 600) return
+        val layout = pageView.layout ?: return
+        val a = (start - pages[page]).coerceIn(0, pageView.text.length)
+        val line = layout.getLineForOffset(a)
+        val top = layout.getLineTop(line) + pageView.paddingTop
+        val bottom = layout.getLineBottom(line) + pageView.paddingTop
+        if (bottom > scroll.scrollY + scroll.height || top < scroll.scrollY) {
+            lastAutoScroll = now
+            scroll.smoothScrollTo(0, (top - scroll.height / 3).coerceAtLeast(0))
+        }
     }
 
     private fun highlightSpoken() {
@@ -1228,6 +1268,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     override fun onWord(start: Int, end: Int) {
         word = start to end
         applyWordMark()
+        if (follow && visible && narrator.isPlaying && pages.isNotEmpty() && start in pages[page] until pageEnd(page) &&
+            start >= spoken.first && start < spoken.second) scrollToWord(start)
     }
 
     /** The word being heard gets a stronger mark inside the sentence's, while following the voice on this page. */
