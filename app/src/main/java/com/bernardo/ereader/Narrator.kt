@@ -33,6 +33,11 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     interface Listener {
         fun onReady()
         fun onSentence(start: Int, end: Int)
+        /**
+         * The word being heard, [start, end) in the book (estimated: see [WordTiming]), inside the sentence from
+         * [onSentence]. At most ~15 times a second, only while [wordHighlight] is on; (-1, -1) = none.
+         */
+        fun onWord(start: Int, end: Int)
         /** true while waiting for audio (model loading or synthesis falling behind). */
         fun onBuffering(waiting: Boolean)
         fun onFinished()
@@ -347,28 +352,64 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         val sync = Renders.readSync(ctx, r.id)
         val parts = Renders.parts(ctx, r)
         if (sync.isEmpty() || parts.isEmpty()) return start(text, from)
-        filePlayer = try { FilePlayer(r, text, sync, parts, from, atMs) } catch (t: Throwable) {
+        filePlayer = try { FilePlayer(r, text, sync, Renders.readSync(ctx, r.id, keepClauses = true), parts, from, atMs) } catch (t: Throwable) {
             AppLog.e("Narrator", "can't play audio file ${r.id}", t)
             return start(text, from)
         }
     }
 
+    /**
+     * [sync] has a point per sentence (clauses folded in, so the whole sentence stays lit); [raw] keeps the clause
+     * points too, since word timing is estimated between consecutive points and shorter stretches land closer.
+     */
     private inner class FilePlayer(private var r: Render, private val text: String, private var sync: List<SyncPoint>,
-                                   private var parts: List<RenderPart>, from: Int, atMs: Long?) {
+                                   private var raw: List<SyncPoint>, private var parts: List<RenderPart>, from: Int, atMs: Long?) {
         private var mp: android.media.MediaPlayer? = null
         private var part = 0
         @Volatile private var released = false
         private var shown = -1
+        // the settings the file was made with ("speed|pause|commaPauses|commaPause|...") shape the word estimate
+        private val fileSettings = r.settings.split('|')
+        private val fSpeed = fileSettings.getOrNull(0)?.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
+        private val fPause = fileSettings.getOrNull(1)?.toIntOrNull() ?: 400
+        private val fCommaPause = fileSettings.getOrNull(3)?.toIntOrNull() ?: 180
+        private var wordsFor = -1                 // raw index whose word table is [words]
+        private var words: WordTiming.Words? = null
         private val tick = object : Runnable {
             override fun run() {
                 if (released) return
                 val pos = positionMs()
-                // last sync point at or before the current position
-                var lo = 0; var hi = sync.size - 1; var idx = 0
-                while (lo <= hi) { val mid = (lo + hi) / 2; if (sync[mid].ms <= pos) { idx = mid; lo = mid + 1 } else hi = mid - 1 }
+                val idx = indexAt(sync, pos)
                 if (idx != shown) { shown = idx; listener.onSentence(sync[idx].start, sync[idx].end) }
-                main.postDelayed(this, 120)
+                if (wordHighlight && raw.isNotEmpty()) {
+                    val k = indexAt(raw, pos)
+                    if (k != wordsFor) { wordsFor = k; words = wordsAt(k) }
+                    val w = words
+                    val i = w?.at(pos - raw[k].ms) ?: -1
+                    if (i < 0) emitWord(-1, -1) else emitWord(w!!.starts[i], w.ends[i])
+                }
+                main.postDelayed(this, if (wordHighlight) 66 else 120)
             }
+        }
+
+        /** Last sync point at or before [pos]. */
+        private fun indexAt(points: List<SyncPoint>, pos: Long): Int {
+            var lo = 0; var hi = points.size - 1; var idx = 0
+            while (lo <= hi) { val mid = (lo + hi) / 2; if (points[mid].ms <= pos) { idx = mid; lo = mid + 1 } else hi = mid - 1 }
+            return idx
+        }
+
+        /** Words of the stretch from raw point [k] to the next one (or the end of the audio made so far). */
+        private fun wordsAt(k: Int): WordTiming.Words? {
+            val p = raw.getOrNull(k) ?: return null
+            val next = raw.getOrNull(k + 1)
+            val endMs = next?.ms ?: parts.lastOrNull()?.let { it.startMs + it.ms } ?: return null
+            // a clause of the same sentence follows: this stretch ends where it starts, after a comma pause
+            val clause = next != null && next.end == p.end && next.start > p.start
+            val until = if (clause) next!!.start else p.end
+            val trailing = if (clause) fCommaPause else fPause
+            return WordTiming.estimate(text, p.start, until, (endMs - p.ms).toInt().coerceAtLeast(0), trailing,
+                commaPauseMs = (100 / fSpeed).toInt(), sentencePauseMs = (200 / fSpeed).toInt())
         }
 
         private fun positionMs() = parts[part].startMs + (runCatching { mp?.currentPosition?.toLong() }.getOrNull() ?: 0L)
@@ -432,6 +473,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                 r = fresh
                 parts = Renders.parts(ctx, fresh)
                 sync = Renders.readSync(ctx, fresh.id).ifEmpty { sync }
+                raw = Renders.readSync(ctx, fresh.id, keepClauses = true).ifEmpty { raw }
+                wordsFor = -1   // the last stretch's end is known now
             }
             if (part + 1 < parts.size) {
                 val ok = runCatching { open(part + 1, parts[part + 1].startMs) }
@@ -449,6 +492,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             if (released) return
             released = true
             main.removeCallbacks(tick)
+            emitWord(-1, -1)
             mp?.let { runCatching { it.stop() }; it.release() }
             mp = null
         }
@@ -599,7 +643,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
      * (start, end, fraction of the way through the text) so the highlight can step sentence by sentence.
      */
     private class Chunk(val start: Int, val end: Int, val samples: FloatArray, val pauseFactor: Float = 1f,
-                        val clause: Boolean = false, val rate: Int = 24000, val subs: List<Triple<Int, Int, Float>> = emptyList())
+                        val clause: Boolean = false, val rate: Int = 24000, val subs: List<Triple<Int, Int, Float>> = emptyList(),
+                        /** Where each word of this piece falls in its audio (live sessions only). */
+                        val words: WordTiming.Words? = null)
 
     /** Settings frozen for a render (live sessions follow the sliders instead). */
     class RenderSpec(val voiceId: String, val speed: Float, val pauseMs: Int, val commaPauses: Boolean,
@@ -616,6 +662,65 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
 
     /** A queued piece: its audio (when ready) and an estimate of how long it'll play until then. */
     private class Item(val f: Future<Chunk?>, val estMs: Long)
+
+    /**
+     * What the listener hears right now: the play thread notes which piece it is writing and where the track's head
+     * is after each write (no allocation); [wordTick] on the main thread reads it. The fields are written one by
+     * one, so a reader can see a half-updated state for one tick: [begin] orders them so that only picks the previous
+     * piece, never a wrong offset.
+     */
+    private class Playhead {
+        @Volatile var rate = 24000
+        @Volatile var chunk: Chunk? = null
+        @Volatile var chunkBase = 0L       // frames written to the track before [chunk]
+        @Volatile var prev: Chunk? = null
+        @Volatile var prevBase = 0L
+        @Volatile var headFrames = 0L      // the track's play head when last looked at
+        @Volatile var headAt = 0L          // nanoTime of that look
+
+        fun reset(r: Int) {
+            rate = r; chunk = null; prev = null; chunkBase = 0L; prevBase = 0L; headFrames = 0L; headAt = System.nanoTime()
+        }
+
+        fun begin(c: Chunk, base: Long) {
+            prev = chunk; prevBase = chunkBase; chunkBase = base; chunk = c
+        }
+
+        fun mark(track: AudioTrack) {
+            headFrames = track.playbackHeadPosition.toLong(); headAt = System.nanoTime()
+        }
+
+        /** Frames heard now: the last mark, moved on by the time since (capped: during a stall the head stands still). */
+        fun frames(): Long {
+            val dt = (System.nanoTime() - headAt).coerceIn(0L, 300_000_000L)
+            return headFrames + dt * rate / 1_000_000_000L
+        }
+    }
+
+    // ---------- word highlight: which word is being heard, ~15x a second ----------
+
+    /** Report the word being heard ([Listener.onWord]): on while the reader is on screen and the setting is on. */
+    @Volatile var wordHighlight = false
+        set(v) { field = v; main.post { if (v) wordTick.run() else emitWord(-1, -1) } }
+    private var wordShownStart = -1   // main thread only
+    private var wordShownEnd = -1
+
+    private fun emitWord(a: Int, b: Int) {
+        if (a == wordShownStart && b == wordShownEnd) return
+        wordShownStart = a; wordShownEnd = b
+        listener.onWord(a, b)
+    }
+
+    private val wordTick = object : Runnable {
+        override fun run() {
+            main.removeCallbacks(this)
+            if (filePlayer != null) return   // it has its own tick
+            val s = session
+            if (!wordHighlight || s == null || s.preview) { emitWord(-1, -1); return }
+            s.tickWord()
+            main.postDelayed(this, 66)
+        }
+    }
 
     private inner class Session(private val text: String, private val from: Int, val preview: Boolean,
                                 private val voiceOverride: String? = null, val prefetchOnly: Boolean = false,
@@ -645,7 +750,10 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             genThread = thread(name = "tts-gen") { generate() }
             when {
                 rendering -> playThread = thread(name = "tts-render") { renderToFile() }
-                !prefetchOnly -> playThread = thread(name = "tts-play") { play() }
+                !prefetchOnly -> {
+                    playThread = thread(name = "tts-play") { play() }
+                    if (!preview) main.post(wordTick)
+                }
             }
         }
 
@@ -778,16 +886,24 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         // only measured on Kokoro; Piper voices are left at the chosen speed
                         val genSpeed = if (voiceInfo.builtIn) sp * shortInputBoost(sentence) else sp
                         val key = cacheKey(sentence, v, sp, cGap)
+                        // the silence written after this piece when it plays: the last word keeps its mark through it
+                        val trailingMs = ((if (isClause) cCommaPause else cPause) * factor).toInt()
+                        // word timing is estimated here, off the audio thread, once the piece's length is known
+                        val wordsWanted = !rendering && !prefetchOnly && !preview
+                        fun chunk(samples: FloatArray, rate: Int) = Chunk(s, e, samples, factor, isClause, rate, subs,
+                            words = if (!wordsWanted) null else WordTiming.estimate(text, part.first, part.second,
+                                (samples.size * 1000L / rate).toInt() + trailingMs, trailingMs,
+                                commaPauseMs = (100 / sp).toInt(), sentencePauseMs = (200 / sp).toInt()))
                         // recently generated (heard or buffered ahead)? use it right away, no engine wait
                         // stay a set amount of listening time ahead (bigger on phones that generate slowly)
                         while (!cancelled && aheadMs() > aheadTargetMs) Thread.sleep(300)
                         if (cancelled) return
                         val cached = cacheGet(key)
                         val job: Future<Chunk?> = if (cached != null) {
-                            FutureTask<Chunk?> { Chunk(s, e, cached.samples, factor, isClause, cached.rate, subs) }.also { it.run() }
+                            FutureTask<Chunk?> { chunk(cached.samples, cached.rate) }.also { it.run() }
                         } else pool.submit<Chunk?> {
                             if (cancelled) return@submit null
-                            cacheGet(key)?.let { return@submit Chunk(s, e, it.samples, factor, isClause, it.rate, subs) }
+                            cacheGet(key)?.let { return@submit chunk(it.samples, it.rate) }
                             run {
                                 val eng = engineFor(voiceInfo)
                                 if (cancelled) return@submit null
@@ -805,7 +921,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                     cachePut(key, c)   // keep it even if this session was cancelled
                                     diskPut(key, c)
                                 }
-                                Chunk(s, e, samples, factor, isClause, audio.sampleRate, subs)
+                                chunk(samples, audio.sampleRate)
                             }
                         }
                         // ~14.5 characters per second of speech at 1x
@@ -1091,11 +1207,27 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             try { f.get() } catch (e: InterruptedException) { throw e } catch (_: Exception) {}
         }
 
+        val playhead = Playhead()
+
+        /** Main thread, ~15x a second while playing: which word is being heard, from the track's play head. */
+        fun tickWord() {
+            val ph = playhead
+            val head = ph.frames()
+            // the track plays a little behind what was last written: the head may still be in the previous piece
+            val c: Chunk?; val base: Long
+            if (head >= ph.chunkBase) { c = ph.chunk; base = ph.chunkBase } else { c = ph.prev; base = ph.prevBase }
+            val w = c?.words ?: return emitWord(-1, -1)
+            val i = w.at((head - base) * 1000 / ph.rate)
+            if (i < 0) emitWord(-1, -1) else emitWord(w.starts[i], w.ends[i])
+        }
+
         private fun play() {
             var track: AudioTrack? = null
             var rate = 24000
             val silenceBuf = FloatArray(4096)
             var shown = -1 to -1   // sentence highlighted now
+            var written = 0L       // frames written to the track so far
+            val ph = playhead
             try {
                 while (!cancelled) {
                     val f = queue.take().f
@@ -1137,6 +1269,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                             .setTransferMode(AudioTrack.MODE_STREAM)
                             .build()
                         track.play()
+                        written = 0L
+                        ph.reset(rate)
                     }
                     // highlight sentence by sentence inside a multi-sentence chunk, timed by its share of the text
                     val subs = if (c.subs.size <= 1) listOf(Triple(c.subs.firstOrNull()?.first ?: c.start, c.end, 0f)) else c.subs
@@ -1151,12 +1285,15 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         if (!preview) main.post { if (!cancelled) listener.onSentence(a, b) }
                     }
                     // write in slices so stop() takes effect quickly
+                    ph.begin(c, written)
                     var off = 0
                     while (off < c.samples.size && !cancelled) {
                         while (nextSub < subs.size && off >= subs[nextSub].third * c.samples.size) announce(nextSub++)
                         val n = minOf(2048, c.samples.size - off)
                         track.write(c.samples, off, n, AudioTrack.WRITE_BLOCKING)
                         off += n
+                        written += n
+                        ph.mark(track)
                     }
                     // pause before the next sentence (written as silence so it stays in sync with the highlight)
                     var silence = (rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor).toInt()
@@ -1164,6 +1301,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         val n = minOf(silenceBuf.size, silence)
                         track.write(silenceBuf, 0, n, AudioTrack.WRITE_BLOCKING)
                         silence -= n
+                        written += n
+                        ph.mark(track)
                     }
                 }
                 if (!cancelled && track != null) {

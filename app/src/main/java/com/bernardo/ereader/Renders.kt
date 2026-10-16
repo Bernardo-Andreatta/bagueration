@@ -113,10 +113,11 @@ object Renders {
      * (same sentence end, later start); those are dropped so the highlight stays on the whole sentence instead of
      * shrinking clause by clause.
      */
-    fun readSync(ctx: Context, id: String): List<SyncPoint> = runCatching {
-        DataInputStream(syncFile(ctx, id).inputStream().buffered()).use { i ->
+    fun readSync(ctx: Context, id: String, keepClauses: Boolean = false): List<SyncPoint> = runCatching {
+        val all = DataInputStream(syncFile(ctx, id).inputStream().buffered()).use { i ->
             List(i.readInt()) { SyncPoint(i.readInt(), i.readInt(), i.readLong()) }
-        }.fold(ArrayList<SyncPoint>()) { out, p ->
+        }
+        if (keepClauses) all else all.fold(ArrayList<SyncPoint>()) { out, p ->
             val last = out.lastOrNull()
             if (last == null || p.end != last.end || p.start <= last.start) out += p
             out

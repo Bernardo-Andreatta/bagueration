@@ -455,6 +455,10 @@ class SettingsActivity : Activity() {
             prefs.edit().putBoolean("paper_texture", on).apply(); keepInPlace(paperRow) { refreshSample() }
         }
         addView(paperRow)
+        addView(switch("Highlight each word", prefs.getBoolean("word_highlight", true),
+            "While reading aloud, the word being spoken lights up inside the sentence.") { on ->
+            prefs.edit().putBoolean("word_highlight", on).apply()
+        })
     }
 
     /** Runs [change] and scrolls so [anchor] stays at the same spot on screen afterwards. */

@@ -67,7 +67,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private lateinit var progressLine: View
     /** Auto-scroll with the voice; turned off when you scroll or change chapter yourself. */
     private var follow = true
+        set(v) { field = v; applyWordMark() }   // the word mark only shows while following
     private var spoken = -1 to -1     // sentence currently being read
+    private var word = -1 to -1       // word currently being heard (estimated), inside [spoken]
     private var th = Themes.all[0]
 
     private val prefs by lazy { getSharedPreferences("reader", MODE_PRIVATE) }
@@ -87,6 +89,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private var heardFile: Pair<String, Long>? = null
     private var pausedWhileHidden = false
     private var highlight = Mark(0, 2)
+    private var wordMark = Mark(0, 3)   // the word being heard, drawn over the sentence highlight
     private var tapMark = Mark(0, 1)
     private var jumpPopup: PopupWindow? = null
     private var fullscreen = false
@@ -551,7 +554,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             // swap the marks on the text already shown: setText on a selectable TextView puts the cursor back at the
             // start and scrolls the page to the top (pausing did that, to add the left-off underline)
             for (s in cur.getSpans(0, cur.length, Any::class.java)) {
-                if ((s is CharacterStyle || s is ParagraphStyle) && s !== highlight && s !== tapMark) cur.removeSpan(s)
+                if ((s is CharacterStyle || s is ParagraphStyle) && s !== highlight && s !== wordMark && s !== tapMark) cur.removeSpan(s)
             }
             for (s in fresh.getSpans(0, fresh.length, Any::class.java)) {
                 cur.setSpan(s, fresh.getSpanStart(s), fresh.getSpanEnd(s), fresh.getSpanFlags(s))
@@ -1162,7 +1165,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (playing) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            (pageView.text as? Spannable)?.removeSpan(highlight)
+            (pageView.text as? Spannable)?.let { it.removeSpan(highlight); it.removeSpan(wordMark) }
+            word = -1 to -1
         }
     }
 
@@ -1218,6 +1222,33 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val hs = (start - pStart).coerceIn(0, sp.length)
         val he = (minOf(end, pageEnd(page)) - pStart).coerceIn(hs, sp.length)
         sp.setSpan(highlight, hs, he, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        applyWordMark()
+    }
+
+    override fun onWord(start: Int, end: Int) {
+        word = start to end
+        applyWordMark()
+    }
+
+    /** The word being heard gets a stronger mark inside the sentence's, while following the voice on this page. */
+    private fun applyWordMark() {
+        if (!::pageView.isInitialized || !::narrator.isInitialized) return
+        val sp = pageView.text as? Spannable ?: return
+        val (a, b) = word
+        val pStart = pages.getOrNull(page) ?: return
+        // off while browsing, hidden, stopped, on another page, or outside the sentence lit now (the sentence mark moves
+        // a moment before the voice gets there; the word mark waits for it)
+        if (a < 0 || !follow || !visible || !narrator.isPlaying || a !in pStart until pageEnd(page) ||
+            a < spoken.first || a >= spoken.second) { sp.removeSpan(wordMark); return }
+        val ws = (a - pStart).coerceIn(0, sp.length)
+        val we = (minOf(b, pageEnd(page)) - pStart).coerceIn(ws, sp.length)
+        if (sp.getSpanStart(wordMark) == ws && sp.getSpanEnd(wordMark) == we) return
+        sp.setSpan(wordMark, ws, we, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
+    /** Word marks are only asked for while the reader is on screen and the setting is on. */
+    private fun syncWordHighlight() {
+        narrator.wordHighlight = visible && prefs.getBoolean("word_highlight", true)
     }
 
     /** Chevron pointing toward the sentence being read (up/down, or toward its chapter). */
@@ -1312,6 +1343,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     override fun onResume() {
         super.onResume()
         visible = true
+        syncWordHighlight()
         startAfterBatteryPrompt?.let { startAfterBatteryPrompt = null; startReading(it) }
         // "Play" on an audio file
         RendersActivity.playRequest?.let { (id, pos) ->
@@ -1497,8 +1529,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         bufferPill.setTextColor(th.text)
         Icons.leading(bufferPill, R.drawable.ic_hourglass, th.accent, sizeDp = 16f, gapDp = 6f)
         // spans carry their own color: rebuild them and re-render the page
-        (pageView.text as? Spannable)?.let { it.removeSpan(highlight); it.removeSpan(tapMark) }
+        (pageView.text as? Spannable)?.let { it.removeSpan(highlight); it.removeSpan(wordMark); it.removeSpan(tapMark) }
         highlight = Mark(th.highlight, 2)
+        wordMark = Mark(th.selection, 3)
         tapMark = Mark(th.selection, 1)
         if (bookId != null && pages.isNotEmpty()) {
             val y = scroll.scrollY
@@ -1829,6 +1862,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     override fun onPause() {
         super.onPause()
         visible = false
+        syncWordHighlight()
         AppLog.i("Reader", "app hidden (background / screen off) · generation speed ${"%.2f".format(narrator.currentRtf)}x realtime cost")
         saveProgress()
     }
