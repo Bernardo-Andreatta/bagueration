@@ -37,8 +37,17 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
     }
     private val rect = RectF()
     private val clip = Rect()
+    private val visible = Rect()
 
     override fun onDraw(canvas: Canvas) {
+        // A chapter is one tall view inside the scroll view. Without this clip, every redraw (a word mark fifteen times
+        // a second, a new sentence) recorded all of the chapter's lines, which stuttered while the page glided. Only
+        // the lines on screen (plus a margin) are drawn, and the reader redraws the view as it scrolls.
+        if (getLocalVisibleRect(visible)) {
+            val margin = (lineHeight * 2).coerceAtLeast(64)
+            visible.inset(0, -margin)
+            canvas.clipRect(visible)
+        }
         val layout = layout
         val t = text as? Spanned
         if (layout != null && t != null) {

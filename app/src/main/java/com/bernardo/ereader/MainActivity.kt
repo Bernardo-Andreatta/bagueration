@@ -283,6 +283,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         updateSpeedChip()
         // remember where you are inside a chapter as you scroll (debounced)
         scroll.setOnScrollChangeListener { _, _, y, _, oldY ->
+            pageView.invalidate()   // the page only draws the lines on screen (see PageView.onDraw)
             pageView.removeCallbacks(saveScrollPos)
             pageView.postDelayed(saveScrollPos, 400)
             if (!follow) updateJumpBack()
