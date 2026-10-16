@@ -526,6 +526,15 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
      * A setting that changes how speech is generated (voice, speed, commas, trimming) was changed while the
      * book is playing: re-render from the sentence being heard. Pause lengths apply live and don't need this.
      */
+    /**
+     * Only the speed changed: nothing is made again. A pre-made file is stretched by its player; live reading
+     * stretches what's already made and makes the rest at the new speed, with no gap (see the play loop).
+     */
+    fun applySpeedToPlaying() {
+        filePlayer?.let { it.applySpeed(); return }
+        session?.takeIf { !it.preview }?.speedDirty = true
+    }
+
     fun applyToPlaying() {
         // a pre-made audio file keeps its voice and pauses, but follows the speed (stretched by the player)
         filePlayer?.let { it.applySpeed(); return }
@@ -669,7 +678,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     private class Chunk(val start: Int, val end: Int, val samples: FloatArray, val pauseFactor: Float = 1f,
                         val clause: Boolean = false, val rate: Int = 24000, val subs: List<Triple<Int, Int, Float>> = emptyList(),
                         /** Where each word of this piece falls in its audio (live sessions only). */
-                        val words: WordTiming.Words? = null)
+                        val words: WordTiming.Words? = null,
+                        /** The speed it was made at: played at another speed, the track stretches it by the ratio. */
+                        val speed: Float = 1f)
 
     /** Settings frozen for a render (live sessions follow the sliders instead). */
     class RenderSpec(val voiceId: String, val speed: Float, val pauseMs: Int, val commaPauses: Boolean,
@@ -761,6 +772,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         private val cGap get() = spec?.maxGapMs ?: maxGapMs
         private val cPhrasing get() = spec?.phrasing ?: phrasing
         @Volatile private var cancelled = false
+        /** The speed changed while playing: the play loop re-stretches the piece in hand at its next slice. */
+        @Volatile var speedDirty = false
         // in-order pieces; how far ahead we generate is limited by audio time (aheadTargetMs), not count
         private val queue = java.util.concurrent.LinkedBlockingQueue<Item>()
         private val endMarker = Chunk(-1, -1, FloatArray(0))
@@ -921,7 +934,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         fun chunk(samples: FloatArray, rate: Int) = Chunk(s, e, samples, factor, isClause, rate, subs,
                             words = if (!wordsWanted) null else WordTiming.estimate(text, part.first, part.second,
                                 (samples.size * 1000L / rate).toInt() + trailingMs, trailingMs,
-                                commaPauseMs = (100 / sp).toInt(), sentencePauseMs = (200 / sp).toInt()))
+                                commaPauseMs = (100 / sp).toInt(), sentencePauseMs = (200 / sp).toInt()),
+                            speed = sp)
                         // recently generated (heard or buffered ahead)? use it right away, no engine wait
                         // stay a set amount of listening time ahead (bigger on phones that generate slowly)
                         while (!cancelled && aheadMs() > aheadTargetMs) Thread.sleep(300)
@@ -1257,6 +1271,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             val silenceBuf = FloatArray(4096)
             var shown = -1 to -1   // sentence highlighted now
             var written = 0L       // frames written to the track so far
+            var trackSpeed = 1f    // the track's playback speed now (a stretch of what was written)
             val ph = playhead
             try {
                 while (!cancelled) {
@@ -1300,6 +1315,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                             .build()
                         track.play()
                         written = 0L
+                        trackSpeed = 1f
                         ph.reset(rate)
                     }
                     // highlight sentence by sentence inside a multi-sentence chunk, timed by its share of the text
@@ -1318,6 +1334,15 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                     // write in slices so stop() takes effect quickly
                     ph.begin(c, written)
                     var off = 0
+                    // a speed change applies at once: audio already made is stretched (pitch kept) by the ratio to
+                    // the speed it was made at; what's made from now on comes out at the new speed and plays at 1:1
+                    fun retune() {
+                        val want = if (preview || rendering) 1f else (cSpeed / c.speed).coerceIn(0.5f, 2.5f)
+                        if (kotlin.math.abs(want - trackSpeed) < 0.01f) return
+                        trackSpeed = want
+                        runCatching { track.playbackParams = track.playbackParams.setSpeed(want) }
+                    }
+                    retune()
                     while (off < c.samples.size && !cancelled) {
                         while (nextSub < subs.size && off >= subs[nextSub].third * c.samples.size) announce(nextSub++)
                         val n = minOf(2048, c.samples.size - off)
@@ -1325,13 +1350,15 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         off += n
                         written += n
                         ph.mark(track)
+                        if (speedDirty) { speedDirty = false; retune() }
                     }
-                    // pause before the next sentence (written as silence so it stays in sync with the highlight)
-                    var silence = (rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor).toInt()
+                    // pause before the next sentence (written as silence so it stays in sync with the highlight);
+                    // the track's stretch applies to it too, so it's written longer/shorter to come out as set
+                    var silence = (rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor * trackSpeed).toInt()
                     if (!c.clause && silence > 0 && !preview && c.samples.isNotEmpty()) {
                         // the track plays behind what was written: tell the reader when the gap is actually heard
-                        val lagMs = ((written - track.playbackHeadPosition.toLong()).coerceAtLeast(0) * 1000 / rate)
-                        val gapMs = silence * 1000 / rate
+                        val lagMs = ((written - track.playbackHeadPosition.toLong()).coerceAtLeast(0) * 1000 / rate / trackSpeed).toLong()
+                        val gapMs = (silence * 1000 / rate / trackSpeed).toInt()
                         val next = c.end
                         main.postDelayed({ if (!cancelled) listener.onGap(next, gapMs) }, lagMs)
                     }

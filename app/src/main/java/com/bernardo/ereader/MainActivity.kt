@@ -1419,7 +1419,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     /** Re-voices from the sentence being read so the new speed is heard right away (quick taps make one restart). */
     /** Live reading re-renders from the sentence being heard; a pre-made file is stretched in place. */
     private val applySpeed = Runnable {
-        if (narrator.isPlaying && !narrator.isPreviewing) narrator.applyToPlaying()
+        if (narrator.isPlaying && !narrator.isPreviewing) narrator.applySpeedToPlaying()
     }
 
     private fun setSpeed(v: Float) {

@@ -76,6 +76,12 @@ class SettingsActivity : Activity() {
      * immediately, anything that changes the generated speech re-renders from the current sentence.
      * Otherwise play the sample so the change can be heard.
      */
+    /** Speed alone: applied to the book as it plays by stretching, nothing made again; otherwise the sample. */
+    private fun speedChanged() {
+        val n = narrator ?: return
+        if (n.isPlaying && !n.isPreviewing) n.applySpeedToPlaying() else playPreview()
+    }
+
     private fun soundChanged(regenerate: Boolean) {
         val n = narrator ?: return
         if (n.isPlaying && !n.isPreviewing) { if (regenerate) n.applyToPlaying() } else playPreview()
@@ -192,7 +198,7 @@ class SettingsActivity : Activity() {
             format = { "${"%.2f".format(Locale.US, it).trimEnd('0').trimEnd('.')}×" }) { speed ->
             prefs.edit().putFloat("speed", speed).apply()
             narrator?.speed = speed
-            soundChanged(regenerate = true)
+            speedChanged()
             refreshPresets()
         }
         Voices.blendPartner(v)?.let { partner ->
