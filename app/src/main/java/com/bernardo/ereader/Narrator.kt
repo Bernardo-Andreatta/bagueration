@@ -86,8 +86,20 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             "mt", "ft", "vs", "etc", "e.g", "i.e", "cf", "approx", "vol", "vols", "ch", "pp", "fig",
             "sgt", "capt", "col", "gen", "lt", "maj", "cmdr", "adm", "gov", "sen", "pres", "insp",
             "jan", "feb", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "inc", "ltd", "corp",
-            // other languages
+            // other languages, where they can't be an ordinary word ending a sentence
             "profa", "ud", "uds", "sig", "dott", "hr", "usw", "z.b", "bzw", "ecc", "p.ex", "sig.ra",
+        )
+
+        /**
+         * Abbreviations that only count in their language: "out." is October in Portuguese and "went out." in
+         * English, "mar." is March in Italian and the sea in Spanish.
+         */
+        private val ABBREVIATIONS_BY_LANG = mapOf(
+            "pt" to setOf("exmo", "exma", "sto", "sta", "av", "pág", "págs", "séc", "sécs", "cap", "fev", "abr", "mai", "ago", "set", "out", "dez"),
+            "es" to setOf("d", "dña", "núm", "excmo", "excma", "ilmo", "ilma", "avda", "tel", "sto", "sta", "cap", "pág", "págs", "ene", "ago", "dic"),
+            "fr" to setOf("mme", "mlle", "ste", "bd", "éd", "op", "chap", "janv", "févr", "avr", "juil", "déc"),
+            "it" to setOf("sigg", "ing", "avv", "pag", "pagg", "sec", "cap", "gen", "mar", "giu", "lug", "ott", "dic", "sig.na", "dott.ssa"),
+            "de" to setOf("d.h", "u.a", "evtl", "ggf", "vgl", "jh", "nr", "str", "ca", "abs", "tel", "kap", "okt", "dez", "mrz"),
         )
 
         /** How abbreviations are spoken. */
@@ -103,16 +115,36 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             listOf(Regex("(?<![\\p{L}.])St\\.(?=\\s+\\p{Lu})") to "Saint", Regex("(?<![\\p{L}.])St\\.") to "Street")
         private fun spoken(vararg pairs: Pair<String, String>) =
             pairs.map { (abbr, word) -> Regex("(?<![\\p{L}.])${Regex.escape(abbr)}") to word }
+        /** An abbreviation that only counts before a number ("p. 12", "n.º 5", "S. 40"). */
+        private fun beforeNumber(abbr: String, word: String) = Regex("(?<![\\p{L}.])${Regex.escape(abbr)}(?=\\s*\\d)") to word
+        /** An abbreviation that only counts before a capitalized word ("S. Pietro", "D. Maria"). */
+        private fun beforeName(abbr: String, word: String, nameEnds: String = "") =
+            Regex("(?<![\\p{L}.])${Regex.escape(abbr)}(?=\\s+\\p{Lu}\\p{L}*$nameEnds\\b)") to word
 
         private val SPOKEN_BY_LANG: Map<String, List<Pair<Regex, String>>> = mapOf(
             "en" to SPOKEN,
             "pt" to spoken("Srta." to "Senhorita", "Sra." to "Senhora", "Sr." to "Senhor", "Dra." to "Doutora", "Dr." to "Doutor",
-                "Profa." to "Professora", "Prof." to "Professor", "etc." to "etcétera", "p. ex." to "por exemplo"),
+                "Profa." to "Professora", "Prof." to "Professor", "Exmo." to "Excelentíssimo", "Exma." to "Excelentíssima",
+                "Sto." to "Santo", "Sta." to "Santa", "Av." to "Avenida", "séc." to "século", "etc." to "etcétera", "p. ex." to "por exemplo") +
+                listOf(beforeNumber("pág.", "página"), beforeNumber("págs.", "páginas"), beforeNumber("n.º", "número"), beforeNumber("nº", "número"),
+                    beforeNumber("cap.", "capítulo"), beforeName("D.", "Dona", nameEnds = "a"), beforeName("D.", "Dom")),
             "es" to spoken("Srta." to "Señorita", "Sra." to "Señora", "Sr." to "Señor", "Dra." to "Doctora", "Dr." to "Doctor",
-                "Uds." to "ustedes", "Ud." to "usted", "Prof." to "Profesor", "etc." to "etcétera"),
-            "fr" to spoken("Mme" to "Madame", "Mlle" to "Mademoiselle", "M." to "Monsieur", "Dr" to "Docteur", "etc." to "et cetera"),
-            "it" to spoken("Sig.ra" to "Signora", "Sig." to "Signor", "Dott.ssa" to "Dottoressa", "Dott." to "Dottor", "ecc." to "eccetera"),
-            "de" to spoken("Hr." to "Herr", "Fr." to "Frau", "Dr." to "Doktor", "z.B." to "zum Beispiel", "usw." to "und so weiter", "bzw." to "beziehungsweise"),
+                "Dña." to "Doña", "Uds." to "ustedes", "Ud." to "usted", "Prof." to "Profesor", "Excmo." to "Excelentísimo",
+                "Sto." to "Santo", "Sta." to "Santa", "Avda." to "Avenida", "etc." to "etcétera") +
+                listOf(beforeNumber("pág.", "página"), beforeNumber("págs.", "páginas"), beforeNumber("núm.", "número"), beforeNumber("n.º", "número"),
+                    beforeNumber("nº", "número"), beforeNumber("cap.", "capítulo"), beforeName("D.", "Don")),
+            "fr" to spoken("Mme" to "Madame", "Mlle" to "Mademoiselle", "M." to "Monsieur", "Dr" to "Docteur", "Bd" to "Boulevard",
+                "éd." to "édition", "etc." to "et cetera") +
+                listOf(beforeNumber("p.", "page"), beforeNumber("pp.", "pages"), beforeNumber("n°", "numéro"), beforeNumber("chap.", "chapitre"),
+                    beforeName("St", "Saint"), beforeName("Ste", "Sainte")),
+            "it" to spoken("Sig.ra" to "Signora", "Sig.na" to "Signorina", "Sig." to "Signor", "Dott.ssa" to "Dottoressa", "Dott." to "Dottor",
+                "Ing." to "Ingegner", "Avv." to "Avvocato", "Prof." to "Professor", "sec." to "secolo", "ecc." to "eccetera") +
+                listOf(beforeNumber("pag.", "pagina"), beforeNumber("pagg.", "pagine"), beforeNumber("n.", "numero"), beforeNumber("cap.", "capitolo"),
+                    beforeName("S.", "San")),
+            "de" to spoken("Hr." to "Herr", "Fr." to "Frau", "Dr." to "Doktor", "Prof." to "Professor", "Str." to "Straße", "ca." to "circa",
+                "z.B." to "zum Beispiel", "d.h." to "das heißt", "u.a." to "unter anderem", "vgl." to "vergleiche", "Jh." to "Jahrhundert",
+                "usw." to "und so weiter", "bzw." to "beziehungsweise") +
+                listOf(beforeNumber("Nr.", "Nummer"), beforeNumber("S.", "Seite"), beforeNumber("Kap.", "Kapitel"), beforeName("St.", "Sankt")),
         )
 
     }
@@ -342,6 +374,24 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         private fun positionMs() = parts[part].startMs + (runCatching { mp?.currentPosition?.toLong() }.getOrNull() ?: 0L)
         val position get() = r.id to positionMs()
 
+        /** The speed the file was made at; the player stretches it to the speed chosen now. */
+        private val madeAt = VoicePreset.parse(r.settings)?.speed ?: 1f
+        private var rate = 1f
+
+        /**
+         * Play at the current [speed] whatever speed the file was made at: time-stretched (pitch kept) by the
+         * player, so a 1× file can be heard at 1.5× without making it again. Positions stay in file time, so
+         * the sentence sync map still lines up.
+         */
+        fun applySpeed() {
+            val want = (speed / madeAt).coerceIn(0.5f, 2.5f)
+            if (kotlin.math.abs(want - rate) < 0.005f) return
+            rate = want
+            val m = mp ?: return
+            runCatching { m.playbackParams = m.playbackParams.setSpeed(rate) }
+                .onFailure { AppLog.e("Narrator", "can't set audio file speed ${"%.2f".format(rate)}", it) }
+        }
+
         init {
             val i = sync.indexOfLast { it.start <= from }.coerceAtLeast(0)
             var startAt = sync[i].ms
@@ -349,9 +399,11 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             val next = sync.getOrNull(i + 1)?.ms ?: Long.MAX_VALUE
             if (atMs != null && atMs > startAt && atMs < next) startAt = maxOf(startAt, atMs - 1500)
             open(parts.indexOfLast { it.startMs <= startAt }.coerceAtLeast(0), startAt)
+            applySpeed()
             listener.onBuffering(false)
             main.post(tick)
-            AppLog.i("Narrator", "playing audio file ${r.id} from ${startAt}ms (${parts.size} parts, ${r.status})")
+            AppLog.i("Narrator", "playing audio file ${r.id} from ${startAt}ms (${parts.size} parts, ${r.status}, " +
+                "made at ${madeAt}×, playing at ${"%.2f".format(rate)}× of that)")
         }
 
         /** Start part [i] at [atMs] of the whole file. */
@@ -369,6 +421,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             m.setOnCompletionListener { if (!released) partEnded() }
             m.start()
             mp = m
+            // the player's speed is per MediaPlayer: set it again on every part (and not before start(), which
+            // setPlaybackParams would trigger on its own)
+            if (rate != 1f) runCatching { m.playbackParams = m.playbackParams.setSpeed(rate) }
         }
 
         private fun partEnded() {
@@ -404,7 +459,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
      * book is playing: re-render from the sentence being heard. Pause lengths apply live and don't need this.
      */
     fun applyToPlaying() {
-        if (filePlayer != null) return   // a pre-made audio file can't change; settings apply to live reading
+        // a pre-made audio file keeps its voice and pauses, but follows the speed (stretched by the player)
+        filePlayer?.let { it.applySpeed(); return }
         val s = session ?: return
         if (s.preview) return
         start(s.bookText, s.playingStart)
@@ -968,9 +1024,24 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             var k = dot
             while (k > 0 && (text[k - 1].isLetter() || text[k - 1] == '.')) k--
             val word = text.substring(k, dot).lowercase()
-            if (word.isEmpty()) return false
-            if (word == "no" || word == "nos") return nextIsDigit(dot + 1)   // "No. 5" but not "He said no."
-            return word in ABBREVIATIONS || (word.length == 1 && text[k].isUpperCase() && word != "i")
+            if (word.isEmpty()) return isGermanOrdinal(dot)
+            if (word == "no" || word == "nos" || word == "n") return nextIsDigit(dot + 1) || text.getOrNull(dot + 1) == 'º'   // "No. 5", "n.º 5", not "He said no."
+            // "p. 12", "s. 40", "v. 3": a single letter before a number is page / Seite / verse, not a sentence end
+            if (word.length == 1 && text[k].isLowerCase()) return nextIsDigit(dot + 1)
+            return word in ABBREVIATIONS || ABBREVIATIONS_BY_LANG[voiceInfo.lang]?.contains(word) == true ||
+                (word.length == 1 && text[k].isUpperCase() && word != "i")
+        }
+
+        /** German writes ordinals as "3.": "am 3. Mai", "Ludwig XIV." — a short number, then a capitalized word. */
+        private fun isGermanOrdinal(dot: Int): Boolean {
+            if (voiceInfo.lang != "de") return false
+            var k = dot
+            while (k > 0 && text[k - 1].isDigit()) k--
+            val digits = dot - k
+            if (digits !in 1..2 || (k > 0 && text[k - 1].isLetterOrDigit())) return false
+            var j = dot + 1
+            while (j < text.length && text[j] == ' ') j++
+            return j < text.length && text[j].isUpperCase()
         }
 
         private fun nextIsDigit(from: Int): Boolean {

@@ -53,11 +53,58 @@ class SpokenTextTest {
     )
 
     @Test
-    fun otherLanguages() = check(
+    fun withoutOrdinalWords() {
+        SpokenText.numberWords = null
+        try {
+            check("pt",
+                "Capítulo IV: 1914–1918, J. R. R. Tolkien" to
+                    "Capítulo 4: 1914 a 1918, J.R.R. Tolkien",
+                // a small regnal number is left to the voice, a bigger one is plain digits either way
+                "*Olá*, D. Pedro II e Luís XIV, 3º lugar" to
+                    "Olá, D. Pedro II e Luís 14, 3º lugar",
+            )
+        } finally { SpokenText.numberWords = Ordinals }
+    }
+
+    @Test
+    fun portuguese() = check(
         "pt",
-        "Capítulo IV: 1914–1918, J. R. R. Tolkien" to
-            "Capítulo 4: 1914 a 1918, J.R.R. Tolkien",
-        "*Olá*, D. Pedro II" to
-            "Olá, D. Pedro II",
+        "D. Pedro II e Luís XIV, o Rei Sol. Dona Maria I reinou. Pedro I de Portugal. João VI. Bento XVI." to
+            "D. Pedro segundo e Luís 14, o Rei Sol. Dona Maria primeira reinou. Pedro primeiro de Portugal. João sexto. Bento 16.",
+        // "20° à sombra" is a temperature read as an ordinal: the degree sign is ambiguous, "20°C" and "20°." are safe
+        "Ficou em 3º lugar, na 2.ª volta, no 1° andar, no século XIX. Fazia 20°C, 20°." to
+            "Ficou em terceiro lugar, na segunda volta, no primeiro andar, no século 19. Fazia 20°C, 20°.",
+        "Pedro I said nothing. Pedro II. O 25º aniversário." to
+            "Pedro I said nothing. Pedro segundo. O vigésimo quinto aniversário.",
+    )
+
+    @Test
+    fun spanish() = check(
+        "es",
+        "Felipe II y Luis XIV. Juan Pablo II. Isabel I de Castilla. El 1º de mayo, la 3ª vez, el siglo XX." to
+            "Felipe segundo y Luis 14. Juan Pablo segundo. Isabel primera de Castilla. El primero de mayo, la tercera vez, el siglo 20.",
+    )
+
+    @Test
+    fun french() = check(
+        "fr",
+        "Louis XIV et François Ier. Élisabeth Ire. Le XIXe siècle, la 1re fois, le 2e étage, 3ème, 21e." to
+            "Louis 14 et François premier. Élisabeth première. Le dix-neuvième siècle, la première fois, le deuxième étage, troisième, vingt et unième.",
+        "Le Me Dupont. Ce livre. Des choses." to
+            "Le Me Dupont. Ce livre. Des choses.",
+    )
+
+    @Test
+    fun italian() = check(
+        "it",
+        "Luigi XIV e Vittorio Emanuele II. Papa Giovanni XXIII. Il 1º maggio, la 2ª volta, nel secolo XIX." to
+            "Luigi quattordicesimo e Vittorio Emanuele secondo. Papa Giovanni ventitreesimo. Il primo maggio, la seconda volta, nel secolo diciannovesimo.",
+    )
+
+    @Test
+    fun german() = check(
+        "de",
+        "Ludwig XIV und Friedrich II von Preußen. Elisabeth I. Papst Benedikt XVI." to
+            "Ludwig der Vierzehnte und Friedrich der Zweite von Preußen. Elisabeth die Erste. Papst Benedikt der Sechzehnte.",
     )
 }
