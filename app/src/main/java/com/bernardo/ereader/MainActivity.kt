@@ -520,17 +520,23 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val id = bookId ?: return
         val d = resources.displayMetrics.density
         val quote = text.substring(s, e).trim().let { if (it.length > 160) it.take(160) + "…" else it }
+        val ui = Ui(this, th)
+        // a rounded field (not a bare underline floating under three empty lines), lined up with the dialog's title
         val input = android.widget.EditText(this).apply {
             setText(existing?.note.orEmpty()); setSelection(text.length)
-            hint = "Your note"; minLines = 3; gravity = Gravity.TOP
-            setTextColor(th.text); setHintTextColor(th.dim)
-            backgroundTintList = ColorStateList.valueOf(th.accent)
+            hint = "Your note"; minLines = 3; maxLines = 8; gravity = Gravity.TOP
+            textSize = 16f; setTextColor(th.text); setHintTextColor(th.dim)
+            background = ui.rounded(th.surface, 12, th.outline)
+            setPadding((14 * d).toInt(), (12 * d).toInt(), (14 * d).toInt(), (12 * d).toInt())
+            highlightColor = th.selection
         }
         val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding((22 * d).toInt(), (6 * d).toInt(), (22 * d).toInt(), 0)
+            orientation = LinearLayout.VERTICAL
+            setPadding((24 * d).toInt(), 0, (24 * d).toInt(), (4 * d).toInt())   // 24dp = the title's own inset
             addView(TextView(this@MainActivity).apply {
-                text = "“$quote”"; textSize = 13f; setTextColor(th.dim); typeface = Typeface.SERIF
-                setPadding(0, 0, 0, (8 * d).toInt())
+                text = "“$quote”"; textSize = 14f; setTextColor(th.dim); typeface = Typeface.SERIF
+                setLineSpacing(0f, 1.2f)
+                setPadding(0, 0, 0, (14 * d).toInt())
             })
             addView(input)
         }
