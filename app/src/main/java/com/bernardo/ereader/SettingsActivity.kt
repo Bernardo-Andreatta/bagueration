@@ -304,7 +304,6 @@ class SettingsActivity : Activity() {
             setText(sampleText(), TextView.BufferType.SPANNABLE)
             setTextColor(th.text)
             setPadding(dp(18), dp(16), dp(18), dp(16))
-            background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(th.bg); setStroke(dp(1), th.dim and 0x55FFFFFF) }
             breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
             hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NORMAL
             sample = this
@@ -385,6 +384,11 @@ class SettingsActivity : Activity() {
             prefs.edit().putBoolean("justify", on).apply(); keepInPlace(justifyRow) { refreshSample() }
         }
         addView(justifyRow)
+        lateinit var paperRow: View
+        paperRow = switch("Paper texture", Themes.paperTexture(this@SettingsActivity), "A soft paper grain behind the page.") { on ->
+            prefs.edit().putBoolean("paper_texture", on).apply(); keepInPlace(paperRow) { refreshSample() }
+        }
+        addView(paperRow)
     }
 
     /** Runs [change] and scrolls so [anchor] stays at the same spot on screen afterwards. */
@@ -428,6 +432,13 @@ class SettingsActivity : Activity() {
         tv.setLineSpacing(0f, prefs.getFloat("spacing", 1.4f))
         tv.justificationMode = if (prefs.getBoolean("justify", true))
             android.text.Layout.JUSTIFICATION_MODE_INTER_WORD else android.text.Layout.JUSTIFICATION_MODE_NONE
+        // the page background (color, or paper), inside the preview's rounded border
+        tv.background = android.graphics.drawable.LayerDrawable(arrayOf(Themes.pageBackground(this, th),
+            GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setStroke(dp(1), th.dim and 0x55FFFFFF) }))
+        tv.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(v: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, v.width, v.height, dp(14).toFloat())
+        }
+        tv.clipToOutline = true
     }
 
     /** Color dots wrapped onto as many rows as needed (no hidden scrolling) + a "+" for the full picker. */
@@ -549,7 +560,7 @@ class SettingsActivity : Activity() {
         Themes.dialog(this).setTitle("Reset settings?")
             .setMessage("Speed and pauses go back to the recommended settings for your voice, and text settings to how they started. Your voice, colors and books stay as they are.")
             .setPositiveButton("Reset") { _, _ ->
-                prefs.edit().apply { for (k in listOf("font_size", "font", "spacing", "justify")) remove(k) }.apply()
+                prefs.edit().apply { for (k in listOf("font_size", "font", "spacing", "justify", "paper_texture")) remove(k) }.apply()
                 rec().apply(this, narrator, currentVoice())
                 soundChanged(regenerate = true)
                 build()

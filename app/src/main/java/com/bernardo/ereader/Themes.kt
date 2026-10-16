@@ -97,6 +97,80 @@ object Themes {
         )
     }
 
+    // ---------- optional paper texture behind the page ----------
+
+    fun paperTexture(ctx: Context) = BookStore.prefs(ctx).getBoolean("paper_texture", false)
+
+    private var paperCache: Pair<Int, android.graphics.Bitmap>? = null
+
+    /**
+     * The page background: the theme color, or (with the paper option on) that color with a soft, tiling paper
+     * grain: gentle blotches, fine grain and a few faint fibers, made once per background color.
+     */
+    fun pageBackground(ctx: Context, t: ReaderTheme): android.graphics.drawable.Drawable {
+        if (!paperTexture(ctx)) return ColorDrawable(t.bg)
+        val bmp = paperCache?.takeIf { it.first == t.bg }?.second ?: paperBitmap(t).also { paperCache = t.bg to it }
+        // shown at 2x its pixel size so the grain reads as soft texture, not pixel noise
+        bmp.density = ctx.resources.displayMetrics.densityDpi / 2
+        return android.graphics.drawable.BitmapDrawable(ctx.resources, bmp).apply {
+            setTileModeXY(android.graphics.Shader.TileMode.REPEAT, android.graphics.Shader.TileMode.REPEAT)
+            isFilterBitmap = true
+        }
+    }
+
+    private fun paperBitmap(t: ReaderTheme): android.graphics.Bitmap {
+        val n = 256
+        val rnd = java.util.Random(7)
+        // smooth value noise that wraps at the tile edge (period divides n), so tiles join without seams
+        fun layer(cells: Int): FloatArray {
+            val g = FloatArray(cells * cells) { rnd.nextFloat() * 2 - 1 }
+            val out = FloatArray(n * n)
+            val step = n / cells.toFloat()
+            for (y in 0 until n) for (x in 0 until n) {
+                val gx = x / step; val gy = y / step
+                val x0 = gx.toInt(); val y0 = gy.toInt()
+                val fx = gx - x0; val fy = gy - y0
+                val sx = fx * fx * (3 - 2 * fx); val sy = fy * fy * (3 - 2 * fy)
+                fun at(i: Int, j: Int) = g[(j % cells) * cells + (i % cells)]
+                val top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx
+                val bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx
+                out[y * n + x] = top + (bottom - top) * sy
+            }
+            return out
+        }
+        val blotches = layer(4); val mid = layer(16); val fine = layer(64)
+        // light paper darkens in the grain; dark themes lighten a touch (less, or it looks dusty)
+        val amp = if (t.light) 0.045f else 0.03f
+        val px = IntArray(n * n)
+        val r0 = (t.bg shr 16) and 0xFF; val g0 = (t.bg shr 8) and 0xFF; val b0 = t.bg and 0xFF
+        for (i in 0 until n * n) {
+            val v = (blotches[i] * 0.45f + mid[i] * 0.3f + fine[i] * 0.15f + (rnd.nextFloat() * 2 - 1) * 0.1f) * amp
+            fun ch(c: Int) = (c + v * (if (t.light) c else 255 - c + 40)).toInt().coerceIn(0, 255)
+            px[i] = (0xFF shl 24) or (ch(r0) shl 16) or (ch(g0) shl 8) or ch(b0)
+        }
+        val bmp = android.graphics.Bitmap.createBitmap(px, n, n, android.graphics.Bitmap.Config.ARGB_8888).copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+        // faint fibers: short curved strands, drawn at the wrapped positions too so they cross tile edges cleanly
+        val canvas = android.graphics.Canvas(bmp)
+        val fiber = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 0.6f; strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+        val ink = if (t.light) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+        repeat(70) {
+            val x = rnd.nextFloat() * n; val y = rnd.nextFloat() * n
+            val len = 6 + rnd.nextFloat() * 18; val a = rnd.nextFloat() * Math.PI.toFloat()
+            val bend = (rnd.nextFloat() - 0.5f) * len * 0.6f
+            val dx = kotlin.math.cos(a) * len; val dy = kotlin.math.sin(a) * len
+            val path = android.graphics.Path().apply {
+                moveTo(x, y); quadTo(x + dx / 2 - dy / len * bend, y + dy / 2 + dx / len * bend, x + dx, y + dy)
+            }
+            fiber.color = (ink and 0xFFFFFF) or (((if (t.light) 10 else 8) + rnd.nextInt(8)) shl 24)
+            for (ox in intArrayOf(-n, 0, n)) for (oy in intArrayOf(-n, 0, n)) {
+                canvas.save(); canvas.translate(ox.toFloat(), oy.toFloat()); canvas.drawPath(path, fiber); canvas.restore()
+            }
+        }
+        return bmp
+    }
+
     /** Every dialog in the app goes through this, so they all follow the current theme (presets and custom). */
     fun dialog(ctx: Context): AlertDialog.Builder = ThemedBuilder(ctx, current(ctx))
 

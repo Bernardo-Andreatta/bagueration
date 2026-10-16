@@ -518,7 +518,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private var settingsSnapshot: List<Any> = emptyList()
     private var wasReadingBeforeSettings = false
     private var looksBeforeSettings: List<Any?> = emptyList()
-    private fun looksSnapshot(): List<Any?> = listOf("theme", "custom_bg", "custom_accent", "font_size", "font", "spacing", "justify")
+    private fun looksSnapshot(): List<Any?> = listOf("theme", "custom_bg", "custom_accent", "font_size", "font", "spacing", "justify", "paper_texture")
         .map { prefs.all[it] }
 
     private fun openSettings(section: String?) {
@@ -1101,7 +1101,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private fun applyTheme() {
         th = Themes.current(this)
         Themes.applyChrome(this, th)
-        findViewById<View>(R.id.root).setBackgroundColor(th.bg)
+        findViewById<View>(R.id.root).background = Themes.pageBackground(this, th)
         pageView.setTextColor(th.text)
         pageView.highlightColor = th.selection
         controls.background = GradientDrawable().apply {
