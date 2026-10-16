@@ -1299,9 +1299,31 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         while (k < text.length && text[k].isWhitespace()) k++
         if (k >= text.length || k !in pages[page] until pageEnd(page)) return   // next chapter: its page opens at the top
         val (s, e) = sentenceAround(k)
-        val target = centeredOn(s, e) ?: return
-        // use the whole pause, within reason: long enough to be gentle, short enough to be done before the voice resumes
-        glideTo(target, ms.toLong().coerceIn(220, 650))
+        if (narrator.isPlayingFile) {
+            // pre-made audio: the phone is idle, so a glide over the pause is smooth
+            val target = centeredOn(s, e) ?: return
+            glideTo(target, ms.toLong().coerceIn(220, 650))
+            return
+        }
+        // live reading: synthesis keeps every core busy and an animation stutters (sickening when you're reading
+        // along), so the page doesn't move while the next sentence still fits; when it wouldn't, it turns in one
+        // step during the pause, putting that sentence near the top, like a page turn
+        val layout = pageView.layout ?: return
+        val win = visibleWindow()
+        val top = layout.getLineTop(layout.getLineForOffset((s - pages[page]).coerceIn(0, pageView.text.length))) + pageView.paddingTop
+        val bottom = layout.getLineBottom(layout.getLineForOffset((maxOf(e - 1, s) - pages[page]).coerceIn(0, pageView.text.length))) + pageView.paddingTop
+        if (top >= win.first && bottom <= win.last) return
+        stopGliding()
+        scroll.scrollTo(0, pageTurnTarget(top, bottom))
+    }
+
+    /** Scroll position that puts a sentence spanning [top, bottom] (px) near the top of the visible part. */
+    private fun pageTurnTarget(top: Int, bottom: Int): Int {
+        val vh = scroll.height - coverTop() - coverBottom()
+        val max = ((scroll.getChildAt(0)?.height ?: 0) - scroll.height).coerceAtLeast(0)
+        // a sentence taller than the visible part starts right at the top
+        val lead = if (bottom - top > vh * 0.8) 0 else (vh * 0.12f).toInt()
+        return (top - coverTop() - lead).coerceIn(0, max)
     }
 
     /** The sentence is being read but isn't on screen (a jump, a sentence taller than the screen): bring it in. */
@@ -1316,8 +1338,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val win = visibleWindow()
         if (top >= win.first && bottom <= win.last) return
         if (followAnim?.isRunning == true) return
-        val target = centeredOn(spoken.first, spoken.second) ?: return
-        glideTo(target, 320)
+        if (narrator.isPlayingFile) {
+            val target = centeredOn(spoken.first, spoken.second) ?: return
+            glideTo(target, 320)
+        } else {
+            // live: one step, no animation (see onGap)
+            val a = layout.getLineForOffset((spoken.first - pages[page]).coerceIn(0, pageView.text.length))
+            val b = layout.getLineForOffset((maxOf(spoken.second - 1, spoken.first) - pages[page]).coerceIn(0, pageView.text.length))
+            scroll.scrollTo(0, pageTurnTarget(layout.getLineTop(a) + pageView.paddingTop, layout.getLineBottom(b) + pageView.paddingTop))
+        }
     }
 
     private fun highlightSpoken() {
