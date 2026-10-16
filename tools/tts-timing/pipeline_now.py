@@ -1,7 +1,8 @@
-"""Python mirror of Narrator.kt's current pipeline (exact pauses at every boundary, short-input pace fix)."""
+"""Python mirror of Narrator.kt's current pipeline (exact pauses at every boundary, short-input pace fix, loudness)."""
 import re, math, numpy as np
 import pipeline_before as pipe_old
 import speak
+import loudness
 from eng import gen
 VOWELS = re.compile(r"[aeiouyàáâãäåèéêëìíîïòóôõöùúûüæœ]+", re.I)
 def syllables(t):
@@ -15,8 +16,9 @@ def syllables(t):
 CLOSERS = "\"'”’»)]"
 
 class P(pipe_old.P):
-    def __init__(s, text, minw=2, minl=1, bk=0.7, **kw):
+    def __init__(s, text, minw=2, minl=1, bk=0.7, loud=1, **kw):
         super().__init__(text, **kw); s.minw=minw; s.minl=minl; s.bk=bk
+        s.loud = bool(loud); s.level = loudness.VoiceLevel()   # the voice's running level (prefs on the phone)
     def speakable(s, t):
         return speak.speakable(t, "en", pipe_old.SPOKEN)
     def spaced_ellipsis_end(s, i):
@@ -124,4 +126,8 @@ class P(pipe_old.P):
     def synth(s, text):
         sp = s.speed * (1 + s.bk*math.exp(-(max(syllables(text),1)-1)/1.6))
         x, rate = gen(text, sid=s.sid, speed=sp)
-        return s.squeeze(s.trim(x, rate), rate, text), rate
+        x = s.squeeze(s.trim(x, rate), rate, text)
+        if s.loud:
+            s.level.update(loudness.measure(x, rate))
+            x = loudness.apply(x, s.level.gain)
+        return x, rate

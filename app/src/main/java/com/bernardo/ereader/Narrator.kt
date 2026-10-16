@@ -51,7 +51,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         private const val MIN_CLAUSE_WORDS_AFTER = 2
         private const val CLOSERS = "\"'”’»)]"
         /** Bump when the way audio is made changes, so cached audio from before isn't reused. */
-        private const val AUDIO_VERSION = 2
+        private const val AUDIO_VERSION = 3
         private val SPACED_ELLIPSIS = Regex("\\.( \\.){2,}")
         private val FOOTNOTE_MARK = Regex("(?<=\\p{L}[\"'”’»)]?)(\\[\\d{1,3}]|[¹²³⁴⁵⁶⁷⁸⁹⁰]+|\\*+)(?=[\\s\\p{P}]|$)")
         private val DOUBLE_HYPHEN = Regex("\\s*--+\\s*")
@@ -502,7 +502,34 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         return out.absolutePath
     }
 
-    /** Audio for one sentence ([start, end) in the book). */
+    // ---------- loudness: every voice (and blend) brought to the same level, see Loudness ----------
+
+    /** Running level per voice key ("kokoro:27#108"), loaded from prefs on first use. */
+    private val levels = HashMap<String, Loudness.VoiceLevel>()
+
+    private fun levelOf(key: String): Loudness.VoiceLevel = synchronized(levels) {
+        levels.getOrPut(key) {
+            val p = BookStore.prefs(ctx)
+            Loudness.VoiceLevel(p.getFloat("loud_db_$key", Float.NaN), p.getFloat("loud_sec_$key", 0f))
+        }
+    }
+
+    /**
+     * [x] brought to the common loudness: measured, folded into the voice's running level (kept in prefs so it
+     * survives restarts), then scaled by the gain that level calls for. The gain follows the voice, not the sentence.
+     */
+    private fun levelled(x: FloatArray, rate: Int, key: String): Pair<FloatArray, String> {
+        val lv = levelOf(key)
+        val m = Loudness.measure(x, rate)
+        val g = synchronized(lv) {
+            if (lv.update(m)) BookStore.prefs(ctx).edit().putFloat("loud_db_$key", lv.db).putFloat("loud_sec_$key", lv.sec).apply()
+            lv.gain
+        }
+        val note = "chunk ${if (m.db.isNaN()) "unvoiced" else "%.1f dB".format(java.util.Locale.US, m.db)}, " +
+            "voice %.1f dB over %.0fs, gain x%.2f".format(java.util.Locale.US, lv.db, lv.sec, g)
+        return Loudness.apply(x, g) to note
+    }
+
     // ---------- audio cache: recently generated sentences, so jumping back is instant ----------
 
     private class Cached(val samples: FloatArray, val rate: Int)
@@ -766,9 +793,10 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                 if (cancelled) return@submit null
                                 val t0 = System.nanoTime()
                                 val audio = eng.generate(sentence, sid, genSpeed)
+                                val (samples, levelNote) = levelled(
+                                    squeezePauses(trimSilence(audio.samples, audio.sampleRate), audio.sampleRate, sentence), audio.sampleRate, v)
                                 AppLog.i("Narrator", "gen ${(System.nanoTime() - t0) / 1_000_000}ms for " +
-                                    "${audio.samples.size * 1000L / audio.sampleRate}ms audio, ${sentence.length} chars")
-                                val samples = squeezePauses(trimSilence(audio.samples, audio.sampleRate), audio.sampleRate, sentence)
+                                    "${audio.samples.size * 1000L / audio.sampleRate}ms audio, ${sentence.length} chars; $levelNote")
                                 val genMs = (System.nanoTime() - t0) / 1_000_000.0
                                 val audioMs = audio.samples.size * 1000.0 / audio.sampleRate
                                 if (audioMs > 300) rtf = rtf * 0.8 + (genMs / audioMs) * 0.2

@@ -13,6 +13,8 @@ app/src/main/assets/kokoro/
 dist/
 voice-samples/
 *.apk
+tools/tts-timing/venv/
+tools/tts-timing/out/
 
 # personal assets for the friend build (photo) — kept local only
 app/src/friend/
