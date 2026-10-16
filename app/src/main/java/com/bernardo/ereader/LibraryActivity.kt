@@ -238,10 +238,10 @@ class LibraryActivity : Activity() {
             list.addView(ui.hint("No book matches “${query.trim()}”.").apply { setPadding(dp(4), 0, dp(4), 0) })
             return
         }
-        // cover grid: as many ~130dp columns as fit
+        // cover grid: as many ~100dp columns as fit (three on a phone)
         val avail = resources.displayMetrics.widthPixels - bars.left - bars.right - 2 * pad
-        val spacing = dp(14)
-        val cols = maxOf(2, ((avail + spacing) / (dp(130) + spacing)))
+        val spacing = dp(12)
+        val cols = maxOf(2, ((avail + spacing) / (dp(100) + spacing)))
         val colWidth = (avail - spacing * (cols - 1)) / cols
         shown.chunked(cols).forEach { rowBooks ->
             list.addView(LinearLayout(this).apply {
@@ -298,15 +298,20 @@ class LibraryActivity : Activity() {
                 setPadding(0, dp(10), 0, dp(6))
             })
             addView(ui.progressBar(th.accent, 4).apply { progress = b.progress * 10 }, LinearLayout.LayoutParams(-1, dp(4)))
-            addView(View(this@LibraryActivity), LinearLayout.LayoutParams(1, 0, 1f))
             addView(LinearLayout(this@LibraryActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                addView(ui.pill("Resume", R.drawable.ic_play, filled = true) { open(b.id, play = true) }.apply {
+                // Resume takes the room left by Open, so the pair never runs past the card on a narrow screen
+                addView(ui.pill("Resume", R.drawable.ic_play, filled = true, wide = true) { open(b.id, play = true) }.apply {
                     contentDescription = "Resume reading aloud"
-                }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
-                addView(ui.pill("Open", null, filled = false) { open(b.id) })
-            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(12) })
-        }, LinearLayout.LayoutParams(0, -1, 1f).apply { marginStart = dp(16) })
+                    setPadding(dp(12), paddingTop, dp(12), paddingBottom)
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
+                addView(ui.pill("Open", null, filled = false) { open(b.id) }.apply {
+                    setPadding(dp(16), paddingTop, dp(16), paddingBottom)
+                })
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+        // wrap_content, not match_parent: a horizontal LinearLayout doesn't count a match_parent child's height, so the
+        // card was only as tall as the cover and cut the buttons off
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) })
     }
 
     private fun bookTile(b: BookStore.Entry, w: Int, reading: Boolean) = LinearLayout(this).apply {
@@ -353,10 +358,12 @@ class LibraryActivity : Activity() {
                 text = b.title
                 setTextColor(0xFFF6EEE2.toInt())
                 typeface = Ui.literata(this@LibraryActivity)
-                textSize = if (w < dp(110)) 13f else 15f
+                // the small one in the long-press sheet gets small type (a 13sp title broke mid-word there)
+                val tiny = w < dp(72)
+                textSize = when { tiny -> 7.5f; w < dp(110) -> 13f; else -> 15f }
                 gravity = Gravity.CENTER
-                maxLines = 5; ellipsize = TextUtils.TruncateAt.END
-                setPadding(dp(10), 0, dp(10), 0)
+                maxLines = if (tiny) 4 else 5; ellipsize = TextUtils.TruncateAt.END
+                setPadding(dp(if (tiny) 4 else 10), 0, dp(if (tiny) 4 else 10), 0)
             }, FrameLayout.LayoutParams(-1, -1))
         }
         if (badge) box.addView(TextView(this).apply {

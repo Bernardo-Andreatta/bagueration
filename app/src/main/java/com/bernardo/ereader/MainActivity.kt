@@ -174,10 +174,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private var barsHidden = false
     private var scrollRun = 0
+    private var scrollTouching = false
+    private var lastScrollTouch = 0L
 
     /** Scrolling down hides the bars, scrolling up (or reaching the end) brings them back. Not while following the voice. */
     private fun autoHideBars(dy: Int, y: Int) {
         if (fullscreen || bookId == null) return
+        // only your own scrolling (a drag, or the fling after it): opening a book at your place, jumping to a search
+        // hit or following the voice scrolls too, and used to hide the bars as the book opened
+        if (!scrollTouching && android.os.SystemClock.uptimeMillis() - lastScrollTouch > 1500) return
         if (narrator.isPlaying && follow) { scrollRun = 0; return }
         scrollRun = if (dy != 0 && (dy > 0) == (scrollRun > 0)) scrollRun + dy else dy
         val d = resources.displayMetrics.density
@@ -232,6 +237,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         emptyHolder = findViewById(R.id.emptyHolder)
         jumpBack.setOnClickListener { returnToVoice() }
         scroll.setOnTouchListener { _, ev ->
+            scrollTouching = ev.actionMasked != MotionEvent.ACTION_UP && ev.actionMasked != MotionEvent.ACTION_CANCEL
+            lastScrollTouch = android.os.SystemClock.uptimeMillis()
             if (ev.actionMasked == MotionEvent.ACTION_MOVE && narrator.isPlaying && follow) {
                 follow = false
                 updateJumpBack()
@@ -444,17 +451,33 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             it.text = ""; it.compoundDrawablePadding = 0; it.setPadding(dp(10), dp(8), dp(10), dp(8))
         }
         bubble.addView(row)
-        popup = PopupWindow(bubble, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-            android.view.ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+        bubble.measure(0, 0)
+        // an explicit size: a WRAP_CONTENT popup is first measured at the system's dialog width (320dp), which
+        // squeezed the last button ("Note" showed as "N")
+        popup = PopupWindow(bubble, bubble.measuredWidth, bubble.measuredHeight, true).apply {
             isOutsideTouchable = true
             setOnDismissListener {
                 (pageView.text as? Spannable)?.removeSpan(tapMark)
                 jumpPopup = null
             }
         }
-        bubble.measure(0, 0)
         val x = (rawX - bubble.measuredWidth / 2).toInt().coerceIn(dp(8), (resources.displayMetrics.widthPixels - bubble.measuredWidth - dp(8)).coerceAtLeast(dp(8)))
-        val y = (rawY - bubble.measuredHeight - 28 * d).toInt().coerceAtLeast(bars.top + dp(8))
+        // above the sentence (not just the tapped line, so it doesn't cover the sentence's start); below it if there's
+        // no room under the top bar
+        val layout = pageView.layout
+        val y = if (layout != null) {
+            val top = loc[1] + pageView.totalPaddingTop + layout.getLineTop(layout.getLineForOffset((s - pages[page]).coerceIn(0, sp.length)))
+            val bottom = loc[1] + pageView.totalPaddingTop + layout.getLineBottom(layout.getLineForOffset((e - pages[page]).coerceIn(0, sp.length)))
+            val above = top - bubble.measuredHeight - dp(6)
+            val barBottom = if (barsHidden) bars.top else topBar.view.height
+            val below = bottom + dp(6)
+            val dockTop = resources.displayMetrics.heightPixels - (if (barsHidden) 0 else controls.height) - bars.bottom
+            when {
+                above >= barBottom + dp(4) -> above
+                below + bubble.measuredHeight <= dockTop -> below
+                else -> (rawY - bubble.measuredHeight - 28 * d).toInt().coerceAtLeast(barBottom + dp(4))   // a long sentence
+            }
+        } else (rawY - bubble.measuredHeight - 28 * d).toInt().coerceAtLeast(bars.top + dp(8))
         jumpPopup = popup
         popup.showAtLocation(scroll, Gravity.NO_GRAVITY, x, y)
         pageView.postDelayed({ if (jumpPopup === popup) popup.dismiss() }, if (note != null) 8000 else 5000)
@@ -656,6 +679,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         bookLang?.let { lang -> runCatching { pageView.textLocale = java.util.Locale.forLanguageTag(lang) } }
         emptyHolder.visibility = View.GONE
         dock.visibility = View.VISIBLE
+        bookActions(true)
         annotations = Annotations.list(this, id)
         AppLog.i("Reader", "book $id: ${text.length} chars, ${book.chapters.size} chapters, lang $bookLang, voice ${narrator.voiceId}")
         showPage(pageOf(readPos))
@@ -663,6 +687,11 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         updateHeader()
         onPlaybackChanged()
         prefetchHere()
+    }
+
+    /** Contents and Search only mean something with a book open. */
+    private fun bookActions(on: Boolean) {
+        for (i in 0 until minOf(2, topBar.actions.childCount)) topBar.actions.getChildAt(i).visibility = if (on) View.VISIBLE else View.GONE
     }
 
     private fun showEmpty() {
@@ -676,6 +705,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
         emptyHolder.visibility = View.VISIBLE
         dock.visibility = View.GONE
+        bookActions(false)
         updateProgressLine()
     }
 
@@ -775,7 +805,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             min < 60 -> "$min min left"
             else -> "${min / 60} h ${min % 60} min left"
         }
-        return "$unit ${p + 1} of ${pages.size}  ·  $left"
+        // count the book's chapters, not pages: front matter before chapter 1 and long chapters cut into parts used to
+        // make this disagree with the chapter title in the top bar ("Chapter 272" under "270: Agreement")
+        val (n, total) = if (book.chapters.isNotEmpty()) chapterAt(pages[p]) + 1 to book.chapters.size else p + 1 to pages.size
+        if (n == 0) return "Start  ·  $left"
+        // long books: the short form, so the minutes left aren't cut off by the chips
+        return if (total >= 100) "$n / $total  ·  $left" else "$unit $n of $total  ·  $left"
     }
 
     /** Spoken length of a chapter, for the contents list. */
@@ -845,7 +880,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         val segPill = View(this).apply { background = ui.rounded(th.accent, 18) }
         val segLabels = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        seg.addView(segPill, android.widget.FrameLayout.LayoutParams(0, -1))
+        // fixed heights: a match_parent child of a wrap_content FrameLayout takes all the height it's offered, and the
+        // control filled the whole sheet
+        seg.addView(segPill, android.widget.FrameLayout.LayoutParams(0, dp(40)))
         seg.addView(segLabels, android.widget.FrameLayout.LayoutParams(-1, dp(40)))
         fun segText(i: Int): String {
             val n = when (i) { 1 -> annotations.count { !it.isNote }; 2 -> annotations.count { it.isNote }; else -> 0 }
@@ -855,7 +892,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         fun select(animate: Boolean) {
             val w = segLabels.width / 3
             if (w > 0) {
-                if (segPill.layoutParams.width != w) segPill.layoutParams = android.widget.FrameLayout.LayoutParams(w, -1)
+                if (segPill.layoutParams.width != w) segPill.layoutParams = android.widget.FrameLayout.LayoutParams(w, dp(40))
                 if (animate) segPill.animate().translationX((current * w).toFloat()).setDuration(180)
                     .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
                 else segPill.translationX = (current * w).toFloat()
@@ -970,7 +1007,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         // where you left off (where play continues): the exact sentence, with a dotted underline, while not reading
         val leftOff = if (heardPos >= 0) heardPos else readPos
-        if (!narrator.isPlaying && leftOff in start until end && leftOff > 0) {
+        // not at the very start of a chapter (that's just where you turned to it: no line under its heading)
+        if (!narrator.isPlaying && leftOff in start until end && leftOff > start) {
             val (ls, le) = sentenceAroundIn(leftOff, start, end)
             if (le > ls) sp.setSpan(Mark((th.accent and 0xFFFFFF) or (0x99 shl 24), 3, dotted = true), ls - start, le - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
@@ -1090,6 +1128,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         heardFile = null
         readPos = pos
         saveProgress()
+        refreshPageSpans()   // the left-off underline moves to what you picked
     }
 
     private fun startReading(from: Int, resume: Boolean = false) {
@@ -1350,7 +1389,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             override fun onStopTrackingTouch(sb: SeekBar) { dragging = false; show(0.5f + sb.progress * 0.05f, apply = true) }
         })
         floatArrayOf(0.8f, 1.0f, 1.25f, 1.5f, 1.75f).forEachIndexed { i, v -> presets.addView(TextView(this).apply {
-            text = fmt(v); tag = v; textSize = 14f; gravity = Gravity.CENTER; minHeight = dp(44); isSingleLine = true
+            // single line first: setSingleLine resets the minimum height to one line
+            text = fmt(v); tag = v; textSize = 14f; gravity = Gravity.CENTER; isSingleLine = true; minHeight = dp(44)
             setOnClickListener { show(v, apply = true) }
         }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i < 4) marginEnd = dp(8) }) }
         val sheet = ui.sheet("Reading speed") {

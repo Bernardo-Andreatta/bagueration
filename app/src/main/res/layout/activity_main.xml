@@ -87,13 +87,19 @@
                 android:orientation="horizontal"
                 android:paddingHorizontal="4dp">
 
+                <!-- shrinks a little before it cuts the minutes left off -->
                 <TextView
                     android:id="@+id/pageLabel"
                     android:layout_width="0dp"
-                    android:layout_height="wrap_content"
+                    android:layout_height="match_parent"
                     android:layout_weight="1"
+                    android:autoSizeMaxTextSize="13sp"
+                    android:autoSizeMinTextSize="11sp"
+                    android:autoSizeStepGranularity="0.5sp"
+                    android:autoSizeTextType="uniform"
                     android:ellipsize="end"
-                    android:singleLine="true"
+                    android:gravity="center_vertical"
+                    android:maxLines="1"
                     android:textSize="13sp" />
 
                 <TextView

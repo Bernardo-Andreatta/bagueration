@@ -71,9 +71,11 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
             while (b > a && t[b - 1].isWhitespace()) b--   // not the space or line break at the end of the line
             while (a < b && t[a].isWhitespace()) a++
             if (b <= a) continue
-            val x1 = layout.getPrimaryHorizontal(a)
+            val extra = justifyExtra(layout, t, line)
+            fun x(o: Int) = layout.getPrimaryHorizontal(o) + if (extra == 0f) 0f else extra * spaces(t, ls, o)
+            val x1 = x(a)
             // at a line's end (a hyphenated or wrapped word) the offset belongs to the next line: use the line's edge
-            val x2 = if (b >= le) layout.getLineRight(line) else layout.getPrimaryHorizontal(b)
+            val x2 = if (b >= le) (if (extra > 0f) layout.width.toFloat() else layout.getLineRight(line)) else x(b)
             val left = minOf(x1, x2); val right = maxOf(x1, x2)
             val baseline = layout.getLineBaseline(line).toFloat()
             // the line's ascent (the tallest text on it, so headings get a taller mark); descent from it, since the
@@ -89,5 +91,36 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
                 canvas.drawRoundRect(rect, radius, radius, fill)
             }
         }
+    }
+
+    private fun spaces(t: CharSequence, from: Int, to: Int): Int {
+        var n = 0
+        for (i in from until to) if (t[i] == ' ') n++
+        return n
+    }
+
+    /**
+     * How much wider each space on [line] is drawn than [android.text.Layout.getPrimaryHorizontal] assumes. Justified
+     * lines get their spaces stretched when drawn, but on many Android versions the layout's positions ignore that, so
+     * marks ended short of the last word and started a word early. 0 if the line isn't stretched or the positions
+     * already include it.
+     */
+    private fun justifyExtra(layout: android.text.Layout, t: CharSequence, line: Int): Float {
+        if (justificationMode == android.text.Layout.JUSTIFICATION_MODE_NONE) return 0f
+        if (layout.getParagraphDirection(line) != android.text.Layout.DIR_LEFT_TO_RIGHT) return 0f
+        val ls = layout.getLineStart(line)
+        val le = layout.getLineEnd(line)
+        // the last line of a paragraph (and of the text) isn't stretched
+        if (le >= t.length || t[le - 1] == '\n') return 0f
+        var te = le
+        while (te > ls && t[te - 1].isWhitespace()) te--
+        val n = spaces(t, ls, te)
+        if (n == 0 || te <= ls) return 0f
+        // where the line's text ends as laid out: before its trailing space, or (a hyphenated word, no space) after its
+        // last letter and the hyphen
+        val natural = if (te < le) layout.getPrimaryHorizontal(te)
+            else layout.getPrimaryHorizontal(te - 1) + paint.measureText(t, te - 1, te) + paint.measureText("-")
+        val gap = layout.width - natural
+        return if (gap < 1f) 0f else gap / n
     }
 }

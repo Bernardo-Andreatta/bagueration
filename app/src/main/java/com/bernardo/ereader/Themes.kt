@@ -135,7 +135,12 @@ object Themes {
         val bmp = paperCache?.takeIf { it.first == t.bg }?.second ?: paperBitmap(t).also { paperCache = t.bg to it }
         // shown at 2x its pixel size so the grain reads as soft texture, not pixel noise
         bmp.density = ctx.resources.displayMetrics.densityDpi / 2
-        return android.graphics.drawable.BitmapDrawable(ctx.resources, bmp).apply {
+        // no intrinsic size: a view takes its background's size as its minimum, which made the reader's top bar as tall
+        // as the tile (a big blank band over the start of the chapter)
+        return object : android.graphics.drawable.BitmapDrawable(ctx.resources, bmp) {
+            override fun getIntrinsicWidth() = -1
+            override fun getIntrinsicHeight() = -1
+        }.apply {
             setTileModeXY(android.graphics.Shader.TileMode.REPEAT, android.graphics.Shader.TileMode.REPEAT)
             isFilterBitmap = true
         }

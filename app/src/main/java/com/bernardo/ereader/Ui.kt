@@ -87,6 +87,9 @@ class Ui(val ctx: Context, val th: ReaderTheme) {
         /** Draw under the status and navigation bars; views pad themselves with [onInsets]. */
         @Suppress("DEPRECATION")
         fun edgeToEdge(w: android.view.Window) {
+            // install the decor now: doing it later (setContentView) re-reads the theme and turns the navigation bar
+            // contrast scrim back on (a white or black band under the player with 3-button navigation)
+            w.decorView
             if (Build.VERSION.SDK_INT >= 30) w.setDecorFitsSystemWindows(false)
             else w.decorView.systemUiVisibility = w.decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -307,10 +310,11 @@ class Ui(val ctx: Context, val th: ReaderTheme) {
             options.forEachIndexed { i, (name, value) ->
                 addView(TextView(ctx).apply {
                     text = name; tag = value; textSize = 14f; gravity = Gravity.CENTER
+                    // one line: shrink a long label ("One sentence") to fit its share of the row instead of wrapping
+                    // (set before minHeight: setSingleLine resets the minimum height to one line)
+                    isSingleLine = true
                     minHeight = dp(44)
                     setPadding(dp(8), dp(8), dp(8), dp(8))
-                    // one line: shrink a long label ("One sentence") to fit its share of the row instead of wrapping
-                    isSingleLine = true
                     setAutoSizeTextTypeUniformWithConfiguration(10, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
                     fonts[value]?.let { typeface = it }
                     setOnClickListener { onTouched(group); onPick(value); paint(value) }
@@ -579,6 +583,10 @@ class Ui(val ctx: Context, val th: ReaderTheme) {
                 @Suppress("DEPRECATION")
                 w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
                 edgeToEdge(w)
+                // a dialog window is kept clear of the system bars by default (they showed as black strips above and
+                // below the sheet): draw under them, the panel pads itself
+                w.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
+                if (Build.VERSION.SDK_INT >= 30) w.attributes = w.attributes.apply { setFitInsetsTypes(0) }
                 w.setWindowAnimations(0)
             }
             // the panel's color reaches under the navigation bar; the keyboard pushes the whole panel up
