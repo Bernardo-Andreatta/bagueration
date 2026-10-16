@@ -214,11 +214,12 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     fun init() = thread(name = "tts-init") {
         try {
             dataDir = copyAssetDir("kokoro/espeak-ng-data", "espeak-ng-data-v1")
-            // audio priority for the voice worker; the engine's own threads are created from it and inherit it.
-            // Android still moves background apps to slower cores, but this keeps us ahead of other work.
+            // the voice worker (and the engine's own threads, created from it) run just below the UI thread: synthesis
+            // at audio priority used to starve the screen, so scrolling and animations stuttered while the voice was
+            // being made ahead. Not background priority either, which Android confines to the slow cores.
             pool = Executors.newSingleThreadExecutor { r ->
                 Thread({
-                    runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
+                    runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT + android.os.Process.THREAD_PRIORITY_LESS_FAVORABLE) }
                     r.run()
                 }, "tts-worker")
             }
@@ -769,7 +770,11 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             when {
                 rendering -> playThread = thread(name = "tts-render") { renderToFile() }
                 !prefetchOnly -> {
-                    playThread = thread(name = "tts-play") { play() }
+                    // the thread feeding the audio track is the one that must never fall behind
+                    playThread = thread(name = "tts-play") {
+                        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
+                        play()
+                    }
                     if (!preview) main.post(wordTick)
                 }
             }
