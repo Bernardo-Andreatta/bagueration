@@ -92,13 +92,25 @@ object Renders {
 
     // ---------- which file the reader plays ----------
 
+    /** [activeId] value for "read live, don't play prepared audio in this book". */
+    const val LIVE = "live"
+
+    /** The file preferred where several cover the same text (the last one played), or [LIVE]. */
     fun activeId(ctx: Context, bookId: String) = BookStore.prefs(ctx).getString("render_active_$bookId", null)
     fun setActive(ctx: Context, bookId: String, id: String?) =
         BookStore.prefs(ctx).edit().apply { if (id == null) remove("render_active_$bookId") else putString("render_active_$bookId", id) }.apply()
 
-    /** The active file whose audio covers [pos] (finished, or the part made so far), if any. */
-    fun playableAt(ctx: Context, bookId: String, pos: Int): Render? =
-        activeId(ctx, bookId)?.let { load(ctx, it) }?.takeIf { it.playable && pos >= it.fromChar && pos < it.coveredTo }
+    /**
+     * The file whose audio covers [pos] (finished, or the part made so far): the active one if it does, else any
+     * other (finished ones first, then the newest). None when the book is set to read live.
+     */
+    fun playableAt(ctx: Context, bookId: String, pos: Int): Render? {
+        val active = activeId(ctx, bookId)
+        if (active == LIVE) return null
+        fun covers(r: Render) = r.playable && pos >= r.fromChar && pos < r.coveredTo
+        active?.let { load(ctx, it) }?.takeIf(::covers)?.let { return it }
+        return list(ctx, bookId).filter(::covers).maxWithOrNull(compareBy<Render>({ it.ready }, { it.created }))
+    }
 
     // ---------- sync map ----------
 

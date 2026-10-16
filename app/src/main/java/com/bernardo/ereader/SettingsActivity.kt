@@ -118,12 +118,14 @@ class SettingsActivity : Activity() {
         col.addView(voiceCard())
         col.addView(presetCard().also { presetCardView = it })
         col.addView(pausesCard())
-        if (bookId != null) col.addView(card("Audio files", R.drawable.ic_headphones) {
-            val n = Renders.list(this@SettingsActivity, bookId!!).count { it.ready }
-            addView(row("Audio files for this book", if (n == 0) "None yet" else "$n ready") {
+        if (bookId != null) col.addView(card("Prepared audio", R.drawable.ic_headphones) {
+            val all = Renders.list(this@SettingsActivity, bookId!!)
+            val n = all.count { it.ready }
+            val preparing = if (RenderManager.current?.render?.bookId == bookId) " · 1 preparing" else ""
+            addView(row("Prepared audio for this book", (if (all.isEmpty()) "None yet" else "$n ready") + preparing) {
                 startActivity(android.content.Intent(this@SettingsActivity, RendersActivity::class.java).putExtra(RendersActivity.EXTRA_BOOK, bookId))
             })
-            addView(hintView("Make audio ahead of time for a few chapters: it plays with no loading, even on a warm phone."))
+            addView(hintView("Prepare chapters ahead of time: they play with no loading, even on a warm phone."))
         })
         if (bookId != null) col.addView(pronunciationsCard())
         col.addView(appearanceCard().also { appearanceCard = it })

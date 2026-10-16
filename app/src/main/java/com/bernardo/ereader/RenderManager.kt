@@ -182,19 +182,19 @@ class RenderService : Service() {
             val ready = p.render.durationMs.takeIf { it > 0 }?.let { " · ${RenderManager.formatDuration(it)} ready to play" } ?: ""
             val eta = ready + (p.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: "")
             ctx.getSystemService(NotificationManager::class.java)
-                .notify(NOTIF, build(ctx, "Making audio: $title", "$pct%$eta", pct, ongoing = true))
+                .notify(NOTIF, build(ctx, "Preparing audio: $title", "$pct%$eta", pct, ongoing = true))
         }
 
         fun finished(ctx: Context, r: Render, ok: Boolean) {
             stop(ctx)
             ctx.getSystemService(NotificationManager::class.java).notify(DONE_NOTIF,
-                build(ctx, if (ok) "Audio ready: ${r.label}" else "Audio file failed: ${r.label}",
+                build(ctx, if (ok) "Audio prepared: ${r.label}" else "Couldn't prepare audio: ${r.label}",
                     if (ok) r.describe() else "Open the app to try again", -1, ongoing = false))
         }
 
         private fun build(ctx: Context, title: String, text: String, pct: Int, ongoing: Boolean): Notification {
             ctx.getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(NotificationChannel(CHANNEL, "Making audio files", NotificationManager.IMPORTANCE_LOW))
+                .createNotificationChannel(NotificationChannel(CHANNEL, "Preparing audio", NotificationManager.IMPORTANCE_LOW))
             val open = PendingIntent.getActivity(ctx, 5, Intent(ctx, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE)
             return Notification.Builder(ctx, CHANNEL)
@@ -212,7 +212,7 @@ class RenderService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val n = build(this, "Making audio: $title", "Starting…", 0, ongoing = true)
+        val n = build(this, "Preparing audio: $title", "Starting…", 0, ongoing = true)
         if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIF, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         else startForeground(NOTIF, n)
         if (wakeLock == null) wakeLock = getSystemService(PowerManager::class.java)
