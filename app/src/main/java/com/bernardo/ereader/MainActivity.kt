@@ -77,6 +77,11 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private var pages = IntArray(0)   // start offset of every page
     private var page = 0
     private var readPos = 0           // where narration resumes (char offset in the book)
+    /** The sentence the voice was on when you paused: play continues there, wherever you've scrolled, until you pick other text. -1 = none. */
+    private var heardPos = -1
+    /** Paused in a pre-made audio file: which one and where (ms), to continue at that exact spot. */
+    private var heardFile: Pair<String, Long>? = null
+    private var pausedWhileHidden = false
     private var highlight = BackgroundColorSpan(0)
     private var tapMark = BackgroundColorSpan(0)
     private var jumpPopup: PopupWindow? = null
@@ -491,6 +496,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         search = null
         pages = paginate()
         readPos = prefs.getInt("pos_$id", 0).coerceIn(0, text.length)
+        heardPos = prefs.getInt("heard_$id", -1).coerceAtMost(text.length - 1)
+        heardFile = prefs.getString("heardfile_$id", null)?.split(':')?.takeIf { it.size == 2 }
+            ?.let { (f, ms) -> ms.toLongOrNull()?.let { f to it } }
         prefs.edit().putString("last_book", id).apply()
         BookStore.markOpened(this, id)
         // language: detected at import; older books get detected now
@@ -623,6 +631,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         fun jump(pos: Int) {
             dialog.dismiss()
             if (narrator.isPlaying) follow = false
+            pickPosition(pos)
             val p = pageOf(pos)
             if (p != page) showPage(p)
             pageView.post {
@@ -726,9 +735,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             if (e0 <= s0) continue
             sp.setSpan(BackgroundColorSpan(if (a.isNote) noteTint else bookmarkTint), s0 - start, e0 - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
-        // where you left off: the exact sentence, underlined, while not reading
-        if (!narrator.isPlaying && readPos in start until end && readPos > 0) {
-            val (ls, le) = sentenceAroundIn(readPos, start, end)
+        // where you left off (where play continues): the exact sentence, underlined, while not reading
+        val leftOff = if (heardPos >= 0) heardPos else readPos
+        if (!narrator.isPlaying && leftOff in start until end && leftOff > 0) {
+            val (ls, le) = sentenceAroundIn(leftOff, start, end)
             if (le > ls) sp.setSpan(android.text.style.UnderlineSpan(), ls - start, le - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         for (c in book.chapters) {
@@ -811,28 +821,54 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     // ---------- narration ----------
     private fun togglePlay() {
         if (bookId == null) return showLibrary()
-        if (narrator.isPlaying) {
-            narrator.stop()
-            onPlaybackChanged()
-            prefetchHere()
-            return
-        }
-        // resume from the saved spot if it's on screen, otherwise from the top of what you're looking at
+        if (narrator.isPlaying) return pauseReading()
+        resumeReading()
+    }
+
+    private fun pauseReading() {
+        if (!narrator.isPlaying) return
+        heardFile = narrator.filePosition
+        narrator.stop()
+        saveProgress()
+        AppLog.i("Reader", "paused at $heardPos" + (heardFile?.let { " (audio file ${it.first} at ${it.second}ms)" } ?: ""))
+        onPlaybackChanged()
+        prefetchHere()
+    }
+
+    /**
+     * Play: continue from the last sentence heard (and the exact spot in an audio file), wherever you've scrolled
+     * since. Only when you picked other text (Read from here, contents, bookmarks, search) or nothing was heard yet:
+     * the saved spot if it's on screen, otherwise the top of what you're looking at.
+     */
+    private fun resumeReading() {
+        if (heardPos in 0 until text.length) return startReading(heardPos, resume = true)
         val from = if (readPos in visibleRange()) readPos else topVisibleOffset()
         startReading(from)
     }
 
-    private fun startReading(from: Int) {
+    /** You chose where to read from while paused (not just scrolled): play starts there, not where the voice stopped. */
+    private fun pickPosition(pos: Int) {
+        if (narrator.isPlaying) return
+        heardPos = -1
+        heardFile = null
+        readPos = pos
+        saveProgress()
+    }
+
+    private fun startReading(from: Int, resume: Boolean = false) {
         if (bookId == null) return
-        AppLog.i("Reader", "read from $from (voice ${narrator.voiceId}, speed ${narrator.speed}, phrasing ${narrator.phrasing})")
-        if (offerVoiceForBookLanguage { startReading(from) }) return
+        AppLog.i("Reader", "read from $from${if (resume) " (resume)" else ""} (voice ${narrator.voiceId}, speed ${narrator.speed}, phrasing ${narrator.phrasing})")
+        if (offerVoiceForBookLanguage { startReading(from, resume) }) return
         follow = true
         readPos = from
-        saveProgress()
         val file = Renders.playableAt(this, bookId!!, from)
+        val atMs = heardFile?.takeIf { resume && it.first == file?.id }?.second
+        heardPos = from
+        heardFile = null
+        saveProgress()
         // first live reading in this book: ask first, play only after a choice
         if (file == null && !prefs.getBoolean("live_tip_$bookId", false)) { showLiveTip(from); return }
-        if (file != null) narrator.playRender(file, text, from) else narrator.start(text, from)
+        if (file != null) narrator.playRender(file, text, from, atMs) else narrator.start(text, from)
         onPlaybackChanged()
         onBuffering(true)
     }
@@ -872,6 +908,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     override fun onSentence(start: Int, end: Int) {
         onBuffering(false)
         readPos = start
+        heardPos = start
         saveProgress()
         spoken = start to end
         if (mediaActive && chapterAt(start) != mediaChapter) syncMedia()
@@ -986,6 +1023,17 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         super.onResume()
         visible = true
         startAfterBatteryPrompt?.let { startAfterBatteryPrompt = null; startReading(it) }
+        // "Play" on an audio file
+        RendersActivity.playRequest?.let { (id, pos) ->
+            RendersActivity.playRequest = null
+            if (id == bookId) { narrator.stop(); pickPosition(pos); startReading(pos) }
+        }
+        // paused from the lock screen / notification: show where the voice stopped (the page didn't follow while hidden)
+        if (pausedWhileHidden && !narrator.isPlaying && heardPos >= 0 && pages.isNotEmpty()) {
+            if (pageOf(heardPos) != page) showPage(pageOf(heardPos))
+            scrollToOffset(heardPos, force = true)
+        }
+        pausedWhileHidden = false
         AppLog.i("Reader", "app visible · generation speed ${"%.2f".format(narrator.currentRtf)}x realtime cost")
         updateAudioChip()
         // back from a locked screen while reading: jump to where the voice is now
@@ -1067,7 +1115,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     /** Jump narration one sentence back / forward (starts reading if stopped). */
     private fun skipSentence(dir: Int, fromSaved: Boolean = false) {
         if (bookId == null || pages.isEmpty()) return
-        val cur = if (fromSaved || narrator.isPlaying || readPos in visibleRange()) readPos else topVisibleOffset()
+        val cur = when {
+            fromSaved || narrator.isPlaying -> readPos
+            heardPos in 0 until text.length -> heardPos   // paused: step from where the voice stopped
+            readPos in visibleRange() -> readPos
+            else -> topVisibleOffset()
+        }
         if (pageOf(cur) != page) showPage(pageOf(cur))
         val (s, e) = sentenceAround(cur.coerceIn(pages[page], pageEnd(page) - 1))
         val target = if (dir > 0) {
@@ -1288,6 +1341,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private fun jumpToMatch(hit: BookSearch.Hit) {
         if (narrator.isPlaying) follow = false   // keep reading; the chevron brings you back
+        pickPosition(hit.start)
         val p = pageOf(hit.start)
         if (p != page) showPage(p)
         (pageView.text as? Spannable)?.let { sp ->
@@ -1312,7 +1366,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     private fun saveProgress() {
-        bookId?.let { prefs.edit().putInt("pos_$it", readPos).apply() }
+        bookId?.let {
+            prefs.edit().putInt("pos_$it", readPos).putInt("heard_$it", heardPos)
+                .putString("heardfile_$it", heardFile?.let { (id, ms) -> "$id:$ms" }).apply()
+        }
     }
 
     /** Hides action bar, bottom controls and system bars. Only views change, so narration keeps going. */
@@ -1382,14 +1439,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     override fun remotePlay() = runOnUiThread {
-        if (bookId != null && !narrator.isPlaying) startReading(readPos)
+        if (bookId != null && !narrator.isPlaying) {
+            if (heardPos in 0 until text.length) startReading(heardPos, resume = true) else startReading(readPos)
+        }
     }
 
     override fun remotePause() = runOnUiThread {
         if (narrator.isPlaying) {
-            narrator.stop()
-            onPlaybackChanged()
-            prefetchHere()
+            if (!visible) pausedWhileHidden = true
+            pauseReading()
         }
     }
 

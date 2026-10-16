@@ -10,8 +10,9 @@ import java.io.DataOutputStream
 import java.io.File
 
 /**
- * A pre-rendered stretch of a book: an AAC audio file plus a sync map (which sentence starts at which
- * millisecond), made with a fixed voice and settings. Several can exist for the same chapters.
+ * A pre-rendered stretch of a book: AAC audio plus a sync map (which sentence starts at which millisecond),
+ * made with a fixed voice and settings. Several can exist for the same chapters. The audio is written in parts
+ * of a few minutes each, so what's finished can be played (and kept) while the rest is still being made.
  */
 data class Render(
     val id: String,
@@ -21,11 +22,18 @@ data class Render(
     val label: String,          // "Chapters 3–7"
     val voiceId: String,
     val settings: String,       // VoicePreset.serialize() + "|phrasing"
-    val status: String,         // processing, ready, failed, interrupted
-    val durationMs: Long,
+    val status: String,         // processing, ready, failed, interrupted, paused
+    val durationMs: Long,       // audio in the finished parts
     val created: Long,
+    val doneChar: Int = fromChar,           // the finished parts cover [fromChar, doneChar); making resumes here
+    val parts: List<Long> = emptyList(),    // length (ms) of each finished part; empty = older single-file render
 ) {
     val ready get() = status == "ready"
+    /** Some audio can be played already (finished, or the parts made so far). */
+    val playable get() = ready || parts.isNotEmpty()
+    /** End of the text that has audio. */
+    val coveredTo get() = if (ready) toChar else doneChar
+    val fraction get() = ((coveredTo - fromChar).toFloat() / (toChar - fromChar).coerceAtLeast(1)).coerceIn(0f, 1f)
 
     fun describe(): String {
         val v = Voices.byId(voiceId)
@@ -39,24 +47,38 @@ data class Render(
 /** One entry of the sync map: the sentence [start, end) begins at [ms] in the audio. */
 class SyncPoint(val start: Int, val end: Int, val ms: Long)
 
+/** One audio file of a render, starting at [startMs] of the whole. */
+class RenderPart(val file: File, val startMs: Long, val ms: Long)
+
 object Renders {
 
     private fun root(ctx: Context) = File(ctx.filesDir, "renders").apply { mkdirs() }
     fun dir(ctx: Context, id: String) = File(root(ctx), id)
-    fun audio(ctx: Context, id: String) = File(dir(ctx, id), "audio.m4a")
+    fun audio(ctx: Context, id: String) = File(dir(ctx, id), "audio.m4a")   // single-file renders (before parts)
+    fun partFile(ctx: Context, id: String, i: Int) = File(dir(ctx, id), "audio_$i.m4a")
     private fun syncFile(ctx: Context, id: String) = File(dir(ctx, id), "sync.bin")
     private fun metaFile(ctx: Context, id: String) = File(dir(ctx, id), "meta.txt")
 
     fun save(ctx: Context, r: Render) {
         dir(ctx, r.id).mkdirs()
         metaFile(ctx, r.id).writeText(listOf(r.id, r.bookId, r.fromChar, r.toChar, r.label, r.voiceId, r.settings,
-            r.status, r.durationMs, r.created).joinToString("\n"))
+            r.status, r.durationMs, r.created, r.doneChar, r.parts.joinToString(",")).joinToString("\n"))
     }
 
     fun load(ctx: Context, id: String): Render? = runCatching {
         val l = metaFile(ctx, id).readLines()
-        Render(l[0], l[1], l[2].toInt(), l[3].toInt(), l[4], l[5], l[6], l[7], l[8].toLong(), l[9].toLong())
+        val status = l[7]
+        val parts = l.getOrNull(11).orEmpty().split(',').mapNotNull { it.toLongOrNull() }
+        Render(l[0], l[1], l[2].toInt(), l[3].toInt(), l[4], l[5], l[6], status, l[8].toLong(), l[9].toLong(),
+            doneChar = l.getOrNull(10)?.toIntOrNull() ?: if (status == "ready") l[3].toInt() else l[2].toInt(), parts = parts)
     }.getOrNull()
+
+    /** The audio files to play, in order. */
+    fun parts(ctx: Context, r: Render): List<RenderPart> {
+        if (r.parts.isEmpty()) return if (r.ready && audio(ctx, r.id).exists()) listOf(RenderPart(audio(ctx, r.id), 0, r.durationMs)) else emptyList()
+        var at = 0L
+        return r.parts.mapIndexed { i, ms -> RenderPart(partFile(ctx, r.id, i), at, ms).also { at += ms } }
+    }
 
     fun list(ctx: Context, bookId: String): List<Render> =
         root(ctx).listFiles().orEmpty().mapNotNull { load(ctx, it.name) }.filter { it.bookId == bookId }.sortedBy { it.created }
@@ -74,9 +96,9 @@ object Renders {
     fun setActive(ctx: Context, bookId: String, id: String?) =
         BookStore.prefs(ctx).edit().apply { if (id == null) remove("render_active_$bookId") else putString("render_active_$bookId", id) }.apply()
 
-    /** The active, finished file that covers [pos], if any. */
+    /** The active file whose audio covers [pos] (finished, or the part made so far), if any. */
     fun playableAt(ctx: Context, bookId: String, pos: Int): Render? =
-        activeId(ctx, bookId)?.let { load(ctx, it) }?.takeIf { it.ready && pos >= it.fromChar && pos < it.toChar }
+        activeId(ctx, bookId)?.let { load(ctx, it) }?.takeIf { it.playable && pos >= it.fromChar && pos < it.coveredTo }
 
     // ---------- sync map ----------
 
@@ -86,9 +108,18 @@ object Renders {
             for (p in points) { o.writeInt(p.start); o.writeInt(p.end); o.writeLong(p.ms) }
         }
 
+    /**
+     * The sync map, one point per sentence. Files store a point for each clause of a sentence cut at commas
+     * (same sentence end, later start); those are dropped so the highlight stays on the whole sentence instead of
+     * shrinking clause by clause.
+     */
     fun readSync(ctx: Context, id: String): List<SyncPoint> = runCatching {
         DataInputStream(syncFile(ctx, id).inputStream().buffered()).use { i ->
             List(i.readInt()) { SyncPoint(i.readInt(), i.readInt(), i.readLong()) }
+        }.fold(ArrayList<SyncPoint>()) { out, p ->
+            val last = out.lastOrNull()
+            if (last == null || p.end != last.end || p.start <= last.start) out += p
+            out
         }
     }.getOrDefault(emptyList())
 }

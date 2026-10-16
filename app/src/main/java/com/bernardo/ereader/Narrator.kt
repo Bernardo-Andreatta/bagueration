@@ -44,6 +44,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         /** The app's narrator, for the settings screen (live changes + preview). */
         @Volatile var instance: Narrator? = null
         private const val MAX_SENTENCE = 300
+        /** Audio files are written in parts of about this long (closed at a sentence end). */
+        private const val RENDER_PART_SEC = 120
         /** Smallest clause cut off at a comma/dash: "Well," may stand alone, but what follows needs 2+ words. */
         private const val MIN_CLAUSE_WORDS_BEFORE = 1
         private const val MIN_CLAUSE_WORDS_AFTER = 2
@@ -278,8 +280,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     fun render(text: String, from: Int, until: Int, spec: RenderSpec, out: RenderOut) {
         cancelRender()
         stopPrefetch()
-        val wrapped = RenderOut(out.writerFor, out.onProgress,
-            onDone = { ms, sync -> renderSession = null; out.onDone(ms, sync) },
+        val wrapped = RenderOut(out.writerFor, out.onProgress, out.onPart,
+            onDone = { renderSession = null; out.onDone() },
+            onPaused = { renderSession = null; out.onPaused() },
             onError = { msg -> renderSession = null; out.onError(msg) })
         renderSession = Session(text, from, false, until = until, spec = spec, out = wrapped).also { it.begin() }
     }
@@ -289,27 +292,45 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         renderSession = null
     }
 
-    // ---------- playing a finished audio file, highlight driven by its sync map ----------
+    /** Stop making the file at the next sentence end, keeping everything made so far (RenderOut.onPaused follows). */
+    fun pauseRender() {
+        renderSession?.pauseRequested = true
+    }
+
+    // ---------- playing a pre-made audio file, highlight driven by its sync map ----------
 
     private var filePlayer: FilePlayer? = null
 
-    /** Plays [r] from the sentence at [from]; when the file ends, reading continues live from where it stops. */
-    fun playRender(r: Render, text: String, from: Int) {
+    /** The audio file playing and where in it (ms), so a pause can resume at that exact spot. */
+    val filePosition: Pair<String, Long>? get() = filePlayer?.position
+
+    /**
+     * Plays [r] from the sentence at [from] (or from [atMs] in the file, when that's inside that sentence: resuming
+     * after a pause). A file still being made plays the parts finished so far, picking up new ones as it goes; where
+     * the audio ends, reading continues live.
+     */
+    fun playRender(r: Render, text: String, from: Int, atMs: Long? = null) {
         stop()
         stopPrefetch()
         val sync = Renders.readSync(ctx, r.id)
-        if (sync.isEmpty()) return start(text, from)
-        filePlayer = FilePlayer(r, text, sync, from)
+        val parts = Renders.parts(ctx, r)
+        if (sync.isEmpty() || parts.isEmpty()) return start(text, from)
+        filePlayer = try { FilePlayer(r, text, sync, parts, from, atMs) } catch (t: Throwable) {
+            AppLog.e("Narrator", "can't play audio file ${r.id}", t)
+            return start(text, from)
+        }
     }
 
-    private inner class FilePlayer(private val r: Render, private val text: String, private val sync: List<SyncPoint>, from: Int) {
-        private val mp = android.media.MediaPlayer()
+    private inner class FilePlayer(private var r: Render, private val text: String, private var sync: List<SyncPoint>,
+                                   private var parts: List<RenderPart>, from: Int, atMs: Long?) {
+        private var mp: android.media.MediaPlayer? = null
+        private var part = 0
         @Volatile private var released = false
         private var shown = -1
         private val tick = object : Runnable {
             override fun run() {
                 if (released) return
-                val pos = runCatching { mp.currentPosition.toLong() }.getOrDefault(0L)
+                val pos = positionMs()
                 // last sync point at or before the current position
                 var lo = 0; var hi = sync.size - 1; var idx = 0
                 while (lo <= hi) { val mid = (lo + hi) / 2; if (sync[mid].ms <= pos) { idx = mid; lo = mid + 1 } else hi = mid - 1 }
@@ -318,32 +339,63 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             }
         }
 
+        private fun positionMs() = parts[part].startMs + (runCatching { mp?.currentPosition?.toLong() }.getOrNull() ?: 0L)
+        val position get() = r.id to positionMs()
+
         init {
-            mp.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            mp.setDataSource(Renders.audio(ctx, r.id).path)
-            mp.prepare()
-            val startAt = sync.lastOrNull { it.start <= from }?.ms ?: 0L
-            mp.seekTo(startAt, android.media.MediaPlayer.SEEK_CLOSEST)
-            mp.setOnCompletionListener {
-                if (released) return@setOnCompletionListener
-                AppLog.i("Narrator", "audio file ${r.id} finished, continuing live at ${r.toChar}")
-                release()
-                filePlayer = null
-                if (r.toChar < text.length) start(text, r.toChar) else listener.onFinished()
-            }
-            mp.start()
+            val i = sync.indexOfLast { it.start <= from }.coerceAtLeast(0)
+            var startAt = sync[i].ms
+            // resuming after a pause: back where it stopped (less a moment, to pick up the thread), not the sentence start
+            val next = sync.getOrNull(i + 1)?.ms ?: Long.MAX_VALUE
+            if (atMs != null && atMs > startAt && atMs < next) startAt = maxOf(startAt, atMs - 1500)
+            open(parts.indexOfLast { it.startMs <= startAt }.coerceAtLeast(0), startAt)
             listener.onBuffering(false)
             main.post(tick)
-            AppLog.i("Narrator", "playing audio file ${r.id} from ${startAt}ms")
+            AppLog.i("Narrator", "playing audio file ${r.id} from ${startAt}ms (${parts.size} parts, ${r.status})")
+        }
+
+        /** Start part [i] at [atMs] of the whole file. */
+        private fun open(i: Int, atMs: Long) {
+            mp?.let { runCatching { it.stop() }; it.release() }
+            mp = null
+            part = i
+            val m = android.media.MediaPlayer()
+            m.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            m.setDataSource(parts[i].file.path)
+            m.prepare()
+            val local = atMs - parts[i].startMs
+            if (local > 0) m.seekTo(local, android.media.MediaPlayer.SEEK_CLOSEST)
+            m.setOnCompletionListener { if (!released) partEnded() }
+            m.start()
+            mp = m
+        }
+
+        private fun partEnded() {
+            // a file still being made may have finished more parts since we started
+            if (part + 1 >= parts.size && !r.ready) Renders.load(ctx, r.id)?.let { fresh ->
+                r = fresh
+                parts = Renders.parts(ctx, fresh)
+                sync = Renders.readSync(ctx, fresh.id).ifEmpty { sync }
+            }
+            if (part + 1 < parts.size) {
+                val ok = runCatching { open(part + 1, parts[part + 1].startMs) }
+                    .onFailure { AppLog.e("Narrator", "audio file ${r.id} part ${part + 1} won't play", it) }.isSuccess
+                if (ok) return
+            }
+            val at = r.coveredTo
+            AppLog.i("Narrator", "audio file ${r.id} ends here, continuing live at $at")
+            release()
+            filePlayer = null
+            if (at < text.length) start(text, at) else listener.onFinished()
         }
 
         fun release() {
             if (released) return
             released = true
             main.removeCallbacks(tick)
-            runCatching { mp.stop() }
-            mp.release()
+            mp?.let { runCatching { it.stop() }; it.release() }
+            mp = null
         }
     }
 
@@ -470,9 +522,14 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     class RenderSpec(val voiceId: String, val speed: Float, val pauseMs: Int, val commaPauses: Boolean,
                      val commaPauseMs: Int, val maxGapMs: Int, val phrasing: Int)
 
-    /** Where a render's audio goes, and who hears about progress. */
-    class RenderOut(val writerFor: (Int) -> AacWriter, val onProgress: (Float, Long) -> Unit,
-                    val onDone: (Long, List<SyncPoint>) -> Unit, val onError: (String) -> Unit)
+    /**
+     * Where a render's audio goes, and who hears about progress. Audio is written in parts ([writerFor] gets the
+     * sample rate and the part's index, counted from this run); [onPart] reports each finished part: its length,
+     * the text it covers up to, and its sentences (ms from the part's start). [onProgress]: text done up to, audio ms.
+     */
+    class RenderOut(val writerFor: (Int, Int) -> AacWriter, val onProgress: (Int, Long) -> Unit,
+                    val onPart: (Long, Int, List<SyncPoint>) -> Unit, val onDone: () -> Unit,
+                    val onPaused: () -> Unit, val onError: (String) -> Unit)
 
     /** A queued piece: its audio (when ready) and an estimate of how long it'll play until then. */
     private class Item(val f: Future<Chunk?>, val estMs: Long)
@@ -509,32 +566,63 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             }
         }
 
-        /** Render mode: write every piece (and its pauses) into the audio file, noting where each sentence starts. */
+        /** Set by [pauseRender]: finish the current part at the next sentence end and stop. */
+        @Volatile var pauseRequested = false
+
+        /**
+         * Render mode: write every piece (and its pauses) into the audio file, noting where each sentence starts.
+         * The audio goes into parts of [RENDER_PART_SEC], each closed at a sentence end, so what's made can be
+         * played (or kept, if making stops) before the whole file is done.
+         */
         private fun renderToFile() {
             val o = out!!
             var writer: AacWriter? = null
-            val sync = ArrayList<SyncPoint>()
+            var partSync = ArrayList<SyncPoint>()
+            var part = 0
             var rate = 24000
+            var closedSamples = 0L
+            var midSentence = false   // the last piece was a clause: the rest of its sentence is still to come
+            var doneTo = from
+            fun closePart(upTo: Int) {
+                val w = writer ?: return
+                writer = null
+                w.finish()
+                closedSamples += w.samplesWritten
+                val ms = w.samplesWritten * 1000 / rate
+                val points = partSync
+                partSync = ArrayList()
+                main.post { o.onPart(ms, upTo, points) }
+            }
             try {
                 while (!cancelled) {
-                    val f = queue.take().f
+                    if (pauseRequested && !midSentence) {
+                        closePart(doneTo)
+                        cancel()
+                        main.post { o.onPaused() }
+                        return
+                    }
+                    // poll, so a pause is noticed while generation is waiting (e.g. stepping aside for live reading)
+                    val f = queue.poll(250, TimeUnit.MILLISECONDS)?.f ?: continue
                     val c = try { f.get() } catch (_: java.util.concurrent.CancellationException) { null } ?: continue
                     if (c === endMarker) break
-                    if (c.samples.isEmpty() && writer == null) continue   // silence before any audio: nothing to extend
-                    if (writer == null) { rate = c.rate; writer = o.writerFor(rate) }
-                    val base = writer.samplesWritten
+                    midSentence = c.clause
+                    if (!c.clause) doneTo = c.end
+                    if (c.samples.isEmpty() && writer == null && part == 0) continue   // silence before any audio: nothing to extend
+                    if (writer == null) { if (part == 0) rate = c.rate; writer = o.writerFor(rate, part++) }
+                    val w = writer!!
+                    val base = w.samplesWritten
                     val subs = if (c.subs.isEmpty()) listOf(Triple(c.start, c.end, 0f)) else c.subs
-                    for ((a, b, frac) in subs) sync += SyncPoint(a, b, (base + (frac * c.samples.size).toLong()) * 1000 / rate)
-                    writer.write(c.samples)
-                    writer.silence((rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor).toInt())
-                    val done = ((c.end - from).toFloat() / (until - from).coerceAtLeast(1)).coerceIn(0f, 1f)
-                    val audioMs = writer.samplesWritten * 1000 / rate
-                    main.post { o.onProgress(done, audioMs) }
+                    for ((a, b, frac) in subs) partSync += SyncPoint(a, b, (base + (frac * c.samples.size).toLong()) * 1000 / rate)
+                    w.write(c.samples)
+                    w.silence((rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor).toInt())
+                    val audioMs = (closedSamples + w.samplesWritten) * 1000 / rate
+                    val upTo = c.end
+                    main.post { o.onProgress(upTo, audioMs) }
+                    if (!c.clause && w.samplesWritten >= rate.toLong() * RENDER_PART_SEC) closePart(c.end)
                 }
                 if (cancelled) { writer?.abort(); return }
-                val total = writer?.let { it.samplesWritten * 1000 / rate } ?: 0L
-                writer?.finish()
-                main.post { o.onDone(total, sync) }
+                closePart(until)
+                main.post { o.onDone() }
             } catch (_: InterruptedException) {
                 writer?.abort()
             } catch (t: Throwable) {
@@ -908,6 +996,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             var track: AudioTrack? = null
             var rate = 24000
             val silenceBuf = FloatArray(4096)
+            var shown = -1 to -1   // sentence highlighted now
             try {
                 while (!cancelled) {
                     val f = queue.take().f
@@ -955,6 +1044,10 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                     var nextSub = 0
                     fun announce(i: Int) {
                         val (a, b, _) = subs[i]
+                        // a clause after a comma continues the sentence already highlighted (same end, later start):
+                        // keep the whole sentence lit instead of shrinking it clause by clause
+                        if (b == shown.second && a > shown.first) return
+                        shown = a to b
                         playingStart = a
                         if (!preview) main.post { if (!cancelled) listener.onSentence(a, b) }
                     }
@@ -989,8 +1082,3 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         }
     }
 }
-            var shown = -1 to -1   // sentence highlighted now
-                        // a clause after a comma continues the sentence already highlighted (same end, later start):
-                        // keep the whole sentence lit instead of shrinking it clause by clause
-                        if (b == shown.second && a > shown.first) return
-                        shown = a to b

@@ -15,13 +15,16 @@ import android.os.PowerManager
 /** Runs audio-file jobs one at a time (queueing the rest) and reports progress to the UI and a notification. */
 object RenderManager {
 
-    class Progress(val render: Render, val startedAt: Long) {
-        @Volatile var fraction = 0f
-        @Volatile var audioMs = 0L
+    class Progress(@Volatile var render: Render, val startedAt: Long) {
+        /** Where this run started (a file can be continued after a pause), for the time-left estimate. */
+        private val startFraction = render.fraction
+        @Volatile var fraction = startFraction
+        @Volatile var audioMs = render.durationMs
         /** Time left, from the pace so far (null until there's enough to tell). */
         val etaMs: Long? get() {
             val elapsed = System.currentTimeMillis() - startedAt
-            return if (fraction < 0.02f) null else (elapsed * (1 - fraction) / fraction).toLong()
+            val done = fraction - startFraction
+            return if (done < 0.02f) null else (elapsed * (1 - fraction) / done).toLong()
         }
     }
 
@@ -32,11 +35,16 @@ object RenderManager {
     private val waiting = mutableListOf<Job>()
     val isBusy get() = current != null
     fun isWaiting(id: String) = waiting.any { it.render.id == id }
+    /** "Continue later" was pressed: the file stops at the next sentence end. */
+    @Volatile var pausing: String? = null
+        private set
 
+    /** Make [render], or continue it from where it stopped ([Render.doneChar], keeping its finished parts). */
     fun enqueue(ctx: Context, render: Render, text: String, spec: Narrator.RenderSpec) {
-        Renders.save(ctx, render)
-        waiting.add(Job(render, text, spec))
-        AppLog.i("Render", "queued ${render.id}: ${render.label} (${render.describe()})")
+        val r = render.copy(status = "processing")
+        Renders.save(ctx, r)
+        waiting.add(Job(r, text, spec))
+        AppLog.i("Render", "queued ${r.id}: ${r.label} (${r.describe()})" + if (r.parts.isNotEmpty()) ", continuing at ${(r.fraction * 100).toInt()}%" else "")
         if (current == null) next(ctx.applicationContext)
     }
 
@@ -45,6 +53,7 @@ object RenderManager {
         if (current?.render?.id == id) {
             Narrator.instance?.cancelRender()
             current = null
+            pausing = null
             RenderService.stop(ctx)
             next(ctx.applicationContext)
         }
@@ -52,7 +61,24 @@ object RenderManager {
         AppLog.i("Render", "cancelled $id")
     }
 
-    /** Files left "processing" by a run that was closed mid-way. */
+    /** "Continue later": keep everything made so far as a playable file and stop; [enqueue] picks it up again. */
+    fun pause(ctx: Context, id: String) {
+        if (waiting.removeAll { it.render.id == id }) {
+            Renders.load(ctx, id)?.let { Renders.save(ctx, it.copy(status = "paused")) }
+            AppLog.i("Render", "paused $id before it started")
+            return
+        }
+        if (current?.render?.id != id) return
+        pausing = id
+        AppLog.i("Render", "pausing $id at the next sentence end")
+        Narrator.instance?.pauseRender() ?: run {
+            Renders.load(ctx, id)?.let { Renders.save(ctx, it.copy(status = "paused")) }
+            current = null; pausing = null
+            RenderService.stop(ctx)
+        }
+    }
+
+    /** Files left "processing" by a run that was closed mid-way (what was finished is kept and can be continued). */
     fun markInterrupted(ctx: Context, bookId: String) {
         for (r in Renders.list(ctx, bookId)) {
             if (r.status == "processing" && current?.render?.id != r.id && !isWaiting(r.id)) {
@@ -64,26 +90,55 @@ object RenderManager {
     private fun next(ctx: Context) {
         val job = if (waiting.isEmpty()) return else waiting.removeAt(0)
         val narrator = Narrator.instance
+        // the latest state on disk: parts finished before a pause or an interruption are kept
+        var r = Renders.load(ctx, job.render.id) ?: job.render
         if (narrator == null) {
-            Renders.save(ctx, job.render.copy(status = "failed"))
-            AppLog.e("Render", "no narrator for ${job.render.id}")
+            Renders.save(ctx, r.copy(status = "failed"))
+            AppLog.e("Render", "no narrator for ${r.id}")
             return
         }
-        val r = job.render
+        // sentences of the kept parts only (a part being written when the app was closed is made again)
+        val sync = Renders.readSync(ctx, r.id).filter { it.ms < r.durationMs && it.start < r.doneChar }.toMutableList()
+        val firstPart = r.parts.size
         val p = Progress(r, System.currentTimeMillis())
         current = p
+        pausing = null
         Renders.dir(ctx, r.id).mkdirs()
         RenderService.start(ctx, r)
-        narrator.render(job.text, r.fromChar, r.toChar, job.spec, Narrator.RenderOut(
-            writerFor = { rate -> AacWriter(Renders.audio(ctx, r.id), rate) },
-            onProgress = { f, ms -> p.fraction = f; p.audioMs = ms; RenderService.update(ctx, p) },
-            onDone = { ms, sync ->
+        val span = (r.toChar - r.fromChar).coerceAtLeast(1).toFloat()
+        val baseMs = r.durationMs
+        narrator.render(job.text, r.doneChar, r.toChar, job.spec, Narrator.RenderOut(
+            writerFor = { rate, i -> AacWriter(Renders.partFile(ctx, r.id, firstPart + i), rate) },
+            onProgress = { upTo, ms ->
+                p.fraction = ((upTo - r.fromChar) / span).coerceIn(0f, 1f); p.audioMs = baseMs + ms
+                RenderService.update(ctx, p)
+            },
+            onPart = { ms, upTo, points ->
+                val shift = r.durationMs
+                sync += points.map { SyncPoint(it.start, it.end, it.ms + shift) }
                 Renders.writeSync(ctx, r.id, sync)
-                Renders.save(ctx, r.copy(status = "ready", durationMs = ms))
+                r = r.copy(parts = r.parts + ms, doneChar = upTo, durationMs = shift + ms)
+                Renders.save(ctx, r)
+                p.render = r
+                // playable now: if the book has no file in use, this one is it
                 if (Renders.activeId(ctx, r.bookId) == null) Renders.setActive(ctx, r.bookId, r.id)
-                AppLog.i("Render", "done ${r.id}: ${ms / 1000}s audio, ${sync.size} sentences")
+            },
+            onDone = {
+                r = r.copy(status = "ready", doneChar = r.toChar)
+                Renders.save(ctx, r)
+                if (Renders.activeId(ctx, r.bookId) == null) Renders.setActive(ctx, r.bookId, r.id)
+                AppLog.i("Render", "done ${r.id}: ${r.durationMs / 1000}s audio, ${r.parts.size} parts, ${sync.size} sentences")
                 current = null
                 RenderService.finished(ctx, r, ok = true)
+                next(ctx)
+            },
+            onPaused = {
+                r = r.copy(status = "paused")
+                Renders.save(ctx, r)
+                AppLog.i("Render", "paused ${r.id} at ${(r.fraction * 100).toInt()}%: ${r.durationMs / 1000}s audio kept")
+                current = null
+                pausing = null
+                RenderService.stop(ctx)
                 next(ctx)
             },
             onError = { msg ->
@@ -120,7 +175,8 @@ class RenderService : Service() {
 
         fun update(ctx: Context, p: RenderManager.Progress) {
             val pct = (p.fraction * 100).toInt()
-            val eta = p.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: ""
+            val ready = p.render.durationMs.takeIf { it > 0 }?.let { " · ${RenderManager.formatDuration(it)} ready to play" } ?: ""
+            val eta = ready + (p.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: "")
             ctx.getSystemService(NotificationManager::class.java)
                 .notify(NOTIF, build(ctx, "Making audio: $title", "$pct%$eta", pct, ongoing = true))
         }

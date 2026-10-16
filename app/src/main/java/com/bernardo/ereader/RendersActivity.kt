@@ -23,6 +23,8 @@ class RendersActivity : Activity() {
     companion object {
         const val EXTRA_BOOK = "book"
         const val EXTRA_CHAPTER = "chapter"
+        /** "Play" was pressed on a file: the reader starts (book id, position) when it comes back. */
+        var playRequest: Pair<String, Int>? = null
     }
 
     private lateinit var th: ReaderTheme
@@ -113,23 +115,37 @@ class RendersActivity : Activity() {
         addView(TextView(this@RendersActivity).apply { text = r.describe(); textSize = 13f; setTextColor(th.dim) })
 
         val p = RenderManager.current?.takeIf { it.render.id == r.id }
+        val waiting = RenderManager.isWaiting(r.id)
+        val pausing = p != null && RenderManager.pausing == r.id
+        val pct = "${(r.fraction * 100).toInt()}%"
+        // parts finished so far: playable while the rest is made (or after making stopped)
+        val canPlay = if (r.playable && !r.ready) "${RenderManager.formatDuration(r.durationMs)} ready to play" else null
         val status = when {
             p != null -> {
                 addView(ProgressBar(this@RendersActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
                     max = 1000; progress = (p.fraction * 1000).toInt()
                     progressTintList = ColorStateList.valueOf(th.accent)
                 }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-                val paused = Narrator.instance?.let { it.isPlaying && !it.isPreviewing } == true
+                val paused = Narrator.instance?.let { it.isPlaying && !it.isPreviewing && !it.isPlayingFile } == true
                 "${(p.fraction * 100).toInt()}% · ${RenderManager.formatDuration(p.audioMs)} made" +
-                    (if (paused) " · paused while you listen" else p.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: "")
+                    when {
+                        pausing -> " · stopping at the end of this sentence"
+                        paused -> " · paused while you listen"
+                        else -> p.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: ""
+                    } +
+                    (if (canPlay != null) "\n$canPlay now · after that, reading continues live" else "")
             }
-            RenderManager.isWaiting(r.id) -> "Waiting for the current file to finish"
+            waiting -> "Waiting for the current file to finish" + (canPlay?.let { "\n$it" } ?: "")
             r.ready -> "${RenderManager.formatDuration(r.durationMs)} · ${Renders.sizeBytes(this@RendersActivity, r) / 1_048_576} MB" +
                 if (active) " · plays when you read these chapters" else ""
-            r.status == "interrupted" -> "Stopped before finishing (the app was closed)"
-            else -> "Couldn't be made"
+            r.status == "paused" -> "Paused at $pct" + (canPlay?.let { " · $it" } ?: "")
+            r.status == "interrupted" -> "Stopped at $pct (the app was closed)" + (canPlay?.let { " · $it" } ?: "")
+            else -> if (canPlay != null) "Stopped at $pct by an error · $canPlay" else "Couldn't be made"
         }
-        addView(TextView(this@RendersActivity).apply { text = status; textSize = 13f; setTextColor(if (r.ready || p != null) th.text else th.dim); setPadding(0, dp(6), 0, dp(4)) })
+        addView(TextView(this@RendersActivity).apply {
+            text = status; textSize = 13f; setLineSpacing(0f, 1.2f)
+            setTextColor(if (r.playable || p != null) th.text else th.dim); setPadding(0, dp(6), 0, dp(4))
+        })
 
         val actions = LinearLayout(this@RendersActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, 0) }
         fun action(label: String, onClick: () -> Unit) = actions.addView(TextView(this@RendersActivity).apply {
@@ -137,18 +153,31 @@ class RendersActivity : Activity() {
             setOnClickListener { onClick() }
         })
         when {
-            p != null || RenderManager.isWaiting(r.id) -> action("Cancel") { RenderManager.cancel(this@RendersActivity, r.id); render() }
+            p != null || waiting -> {
+                if (r.playable) action("Play") { play(r) }
+                if (!pausing) action("Continue later") { RenderManager.pause(this@RendersActivity, r.id); render() }
+                action("Cancel") { RenderManager.cancel(this@RendersActivity, r.id); render() }
+            }
             r.ready -> {
                 if (active) action("Don't use for playback") { Renders.setActive(this@RendersActivity, bookId, null); render() }
                 else action("Use for playback") { Renders.setActive(this@RendersActivity, bookId, r.id); render() }
                 action("Delete") { confirmDelete(r) }
             }
             else -> {
-                action("Try again") { retry(r) }
+                if (r.playable) action("Play") { play(r) }
+                action(if (r.playable) "Continue making" else "Try again") { resume(r) }
                 action("Delete") { confirmDelete(r) }
             }
         }
         addView(actions)
+    }
+
+    /** Use [r] for playback and go back to the book, reading from where you are if the file covers it, else its start. */
+    private fun play(r: Render) {
+        Renders.setActive(this, bookId, r.id)
+        val heard = BookStore.prefs(this).getInt("pos_$bookId", -1)
+        RendersActivity.playRequest = bookId to (if (heard >= r.fromChar && heard < r.coveredTo) heard else r.fromChar)
+        finish()
     }
 
     private fun confirmDelete(r: Render) {
@@ -158,12 +187,10 @@ class RendersActivity : Activity() {
             .setNegativeButton("Cancel", null).show()
     }
 
-    private fun retry(r: Render) {
+    /** Make it again from where it stopped, keeping the parts already made. */
+    private fun resume(r: Render) {
         val b = book ?: return
-        val spec = specFrom(r.voiceId, r.settings)
-        val again = r.copy(id = "r" + System.currentTimeMillis(), status = "processing", created = System.currentTimeMillis())
-        Renders.delete(this, r)
-        RenderManager.enqueue(this, again, b.text, spec)
+        RenderManager.enqueue(this, r, b.text, specFrom(r.voiceId, r.settings))
         render()
     }
 
