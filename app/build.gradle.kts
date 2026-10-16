@@ -11,8 +11,8 @@ android {
         applicationId = "com.bernardo.ereader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "4.7"
+        versionCode = 31
+        versionName = "5.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
