@@ -570,6 +570,12 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         return (tenths / 10f).also { lastBatteryTempC = it }
     }
 
+    /** Plugged in (charging or full on the charger). */
+    private fun charging(): Boolean {
+        val i = runCatching { ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)) }.getOrNull() ?: return false
+        return i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+    }
+
     /** The battery's temperature when last looked at (°C), NaN before that. */
     @Volatile var lastBatteryTempC = Float.NaN
         private set
@@ -986,7 +992,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                 if (rendering && !cancelled) {
                                     val gentle = BookStore.prefs(ctx).getBoolean("render_gentle", false)
                                     val level = thermalLevel()
-                                    val temp = batteryTempC()
+                                    // charging heats the battery too, with a lag: while plugged in the pacing acts as
+                                    // if it were 1.5 °C warmer, so it eases off before the heat builds up
+                                    val temp = batteryTempC()?.let { if (charging()) it + 1.5f else it }
                                     // gentle: paced by the battery's temperature so the phone stays under about 38 °C:
                                     // cool = rest half the time worked, warm = as long, warmer = twice, hot = three
                                     // times; past ~40.5 °C it waits until it's back under 39
@@ -1009,7 +1017,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                         AppLog.i("Narrator", "pre-load waiting: phone too hot (thermal $level, battery ${temp ?: "?"} °C)")
                                         while (!cancelled && !pauseRequested) {
                                             runCatching { Thread.sleep(10_000) }
-                                            val t = batteryTempC()
+                                            val t = batteryTempC()?.let { if (charging()) it + 1.5f else it }
                                             val stillHot = thermalLevel() >= android.os.PowerManager.THERMAL_STATUS_SEVERE || (gentle && t != null && t >= 39f)
                                             if (!stillHot) break
                                         }

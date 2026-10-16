@@ -638,7 +638,7 @@ class RendersActivity : Activity() {
             setPadding(dp(8), dp(12), dp(8), 0)
             // gentle: half speed, much less heat; good while charging overnight. Applies to everything being pre-loaded.
             addView(ui.switchRow("Gentle: slower, stays cool", BookStore.prefs(this@RendersActivity).getBoolean("render_gentle", false),
-                "Paced by the battery's temperature to stay under about 38 °C: half speed when cool, slower when warm, " +
+                "Paced by the battery's temperature (sooner while charging) to stay under about 38 °C: half speed when cool, slower when warm, " +
                 "waits if it gets hot. Good while the phone is charging.") { on ->
                 BookStore.prefs(this@RendersActivity).edit().putBoolean("render_gentle", on).apply(); update()
             }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
