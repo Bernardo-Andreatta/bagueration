@@ -105,7 +105,7 @@ class RendersActivity : Activity() {
     private fun onHold() = Narrator.instance?.let { it.isPlaying && !it.isPreviewing && !it.isPlayingFile } == true
 
     private fun signature() = Renders.list(this, bookId).joinToString(";") { "${it.id}:${kindOf(it)}:${it.parts.size}" } +
-        "|${Renders.activeId(this, bookId)}|${RenderManager.pausing}|${onHold()}|${Background.unrestricted(this)}"
+        "|${Renders.activeId(this, bookId)}|${RenderManager.pausing}|${onHold()}|${Background.unrestricted(this)}|${Narrator.instance?.coolingDown}"
 
     private fun chapterEnd(i: Int) = if (i + 1 < chapters.size) chapters[i + 1].start else textLength
     private fun chapterName(i: Int) = if (book?.chapters.isNullOrEmpty()) chapters[i].title else chapters[i].displayName(i)
@@ -215,7 +215,7 @@ class RendersActivity : Activity() {
         }
         val strong = kind == Kind.MAKING || kind == Kind.READY
         val status = when (kind) {
-            Kind.MAKING -> if (pausing) "Pausing" else if (hold) "On hold" else "Pre-loading"
+            Kind.MAKING -> if (pausing) "Pausing" else if (hold) "On hold" else if (Narrator.instance?.coolingDown == true) "Cooling down" else "Pre-loading"
             Kind.QUEUED -> "Waiting"
             Kind.READY -> "Ready"
             Kind.PAUSED, Kind.STOPPED -> "Paused"
@@ -264,6 +264,8 @@ class RendersActivity : Activity() {
                     Kind.MAKING -> pct + ready + when {
                         pausing -> " · pausing after this sentence"
                         hold -> " · waits while you listen live"
+                        Narrator.instance?.coolingDown == true -> " · waiting for the phone to cool down" +
+                            (Narrator.instance?.lastBatteryTempC?.takeIf { !it.isNaN() }?.let { " (${it.toInt()} °C)" } ?: "") + ", carries on by itself"
                         else -> p?.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: ""
                     }
                     Kind.QUEUED -> "Starts when the one before it is done" + if (fraction > 0) " · $pct pre-loaded" else ""
@@ -636,7 +638,8 @@ class RendersActivity : Activity() {
             setPadding(dp(8), dp(12), dp(8), 0)
             // gentle: half speed, much less heat; good while charging overnight. Applies to everything being pre-loaded.
             addView(ui.switchRow("Gentle: slower, stays cool", BookStore.prefs(this@RendersActivity).getBoolean("render_gentle", false),
-                "Rests between sentences, about half speed. Good while the phone is charging.") { on ->
+                "Paced by the battery's temperature to stay under about 38 °C: half speed when cool, slower when warm, " +
+                "waits if it gets hot. Good while the phone is charging.") { on ->
                 BookStore.prefs(this@RendersActivity).edit().putBoolean("render_gentle", on).apply(); update()
             }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
             addView(summary); addView(details)

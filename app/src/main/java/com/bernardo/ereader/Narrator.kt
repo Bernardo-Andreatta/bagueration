@@ -558,6 +558,22 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         }
     }
 
+    /** A pre-load is waiting for the phone to cool down (it carries on by itself). */
+    @Volatile var coolingDown = false
+        private set
+
+    /** The battery's temperature in °C from the sticky battery broadcast (every Android), or null. Also kept in [lastBatteryTempC]. */
+    private fun batteryTempC(): Float? {
+        val i = runCatching { ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)) }.getOrNull() ?: return null
+        val tenths = i.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+        if (tenths == Int.MIN_VALUE || tenths <= 0) return null
+        return (tenths / 10f).also { lastBatteryTempC = it }
+    }
+
+    /** The battery's temperature when last looked at (°C), NaN before that. */
+    @Volatile var lastBatteryTempC = Float.NaN
+        private set
+
     /** The phone's thermal status (Android 10+), 0 = none; used to slow pre-loading down before it throttles. */
     private fun thermalLevel(): Int = if (android.os.Build.VERSION.SDK_INT < 29) 0 else
         runCatching { ctx.getSystemService(android.os.PowerManager::class.java).currentThermalStatus }.getOrDefault(0)
@@ -963,13 +979,43 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                 val audioMs = audio.samples.size * 1000.0 / audio.sampleRate
                                 if (audioMs > 300) rtf = rtf * 0.8 + (genMs / audioMs) * 0.2
                                 // pre-loading: in gentle mode (a switch, read live so it applies at once) it rests as
-                                // long as it worked; any pre-load backs off when the phone reports it's getting hot.
-                                // The live voice never waits here.
+                                // long as it worked. And it follows the phone's thermal status: moderate = a short
+                                // rest, severe = a long one, critical = wait (checked every few seconds) until it's
+                                // back down, then carry on by itself; it never needs a tap. The live voice never
+                                // waits here.
                                 if (rendering && !cancelled) {
                                     val gentle = BookStore.prefs(ctx).getBoolean("render_gentle", false)
-                                    val hot = thermalLevel() >= android.os.PowerManager.THERMAL_STATUS_SEVERE
-                                    val restMs = (if (gentle) genMs else 0.0) + (if (hot) 3000.0 else 0.0)
-                                    if (restMs > 0) runCatching { Thread.sleep(restMs.toLong().coerceAtMost(15_000)) }
+                                    val level = thermalLevel()
+                                    val temp = batteryTempC()
+                                    // gentle: paced by the battery's temperature so the phone stays under about 38 °C:
+                                    // cool = rest half the time worked, warm = as long, warmer = twice, hot = three
+                                    // times; past ~40.5 °C it waits until it's back under 39
+                                    val gentleRest = if (!gentle) 0.0 else genMs * when {
+                                        temp == null -> 1.0
+                                        temp < 35f -> 0.5
+                                        temp < 37.5f -> 1.0
+                                        temp < 39.5f -> 2.0
+                                        else -> 3.0
+                                    }
+                                    val restMs = gentleRest + when {
+                                        level >= android.os.PowerManager.THERMAL_STATUS_SEVERE -> genMs * 1.5 + 3000
+                                        level >= android.os.PowerManager.THERMAL_STATUS_MODERATE -> genMs * 0.5
+                                        else -> 0.0
+                                    }
+                                    if (restMs > 0) runCatching { Thread.sleep(restMs.toLong().coerceAtMost(30_000)) }
+                                    val tooHot = level >= android.os.PowerManager.THERMAL_STATUS_CRITICAL || (gentle && temp != null && temp >= 40.5f)
+                                    if (tooHot) {
+                                        coolingDown = true
+                                        AppLog.i("Narrator", "pre-load waiting: phone too hot (thermal $level, battery ${temp ?: "?"} °C)")
+                                        while (!cancelled && !pauseRequested) {
+                                            runCatching { Thread.sleep(10_000) }
+                                            val t = batteryTempC()
+                                            val stillHot = thermalLevel() >= android.os.PowerManager.THERMAL_STATUS_SEVERE || (gentle && t != null && t >= 39f)
+                                            if (!stillHot) break
+                                        }
+                                        coolingDown = false
+                                        AppLog.i("Narrator", "pre-load resuming (thermal ${thermalLevel()}, battery ${batteryTempC() ?: "?"} °C)")
+                                    }
                                 }
                                 val c = Cached(samples, audio.sampleRate)
                                 if (!rendering) {   // renders don't push live audio out of the caches
