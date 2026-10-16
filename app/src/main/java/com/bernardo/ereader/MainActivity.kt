@@ -608,6 +608,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             }
             val id = data?.getStringExtra(LibraryActivity.EXTRA_OPEN)
             if (resultCode == RESULT_OK && id != null && id != bookId) openBook(id)
+            // "Resume" in the library: read aloud from where you left off
+            if (resultCode == RESULT_OK && id != null && id == bookId && data.getBooleanExtra(LibraryActivity.EXTRA_PLAY, false) &&
+                !narrator.isPlaying) pageView.post { if (bookId == id) resumeReading() }
         }
     }
 
@@ -1646,7 +1649,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private fun saveProgress() {
         bookId?.let {
-            prefs.edit().putInt("pos_$it", readPos).putInt("heard_$it", heardPos)
+            // the chapter's name is kept for the library's "continue reading" card
+            val chapter = if (pages.isNotEmpty()) book.chapters.getOrNull(chapterAt(readPos))?.title else null
+            prefs.edit().putInt("pos_$it", readPos).putInt("heard_$it", heardPos).putString("chapter_$it", chapter)
                 .putString("heardfile_$it", heardFile?.let { (id, ms) -> "$id:$ms" }).apply()
         }
     }

@@ -61,7 +61,7 @@ object BookStore {
         for (ext in listOf("txt", "meta", "jpg")) File(d, "$id.$ext").delete()
         val p = prefs(ctx)
         p.edit().apply {
-            for (k in listOf("title_", "author_", "pos_", "opened_", "lang_", "lang2_", "langtag_", "voice_book_", "skip_voice_offer_", "annot_", "pron_", "render_active_", "live_tip_")) remove("$k$id")
+            for (k in listOf("title_", "author_", "pos_", "opened_", "lang_", "lang2_", "langtag_", "voice_book_", "skip_voice_offer_", "annot_", "pron_", "render_active_", "live_tip_", "chapter_", "heard_", "heardfile_")) remove("$k$id")
             if (p.getString("last_book", null) == id) remove("last_book")
         }.apply()
     }
