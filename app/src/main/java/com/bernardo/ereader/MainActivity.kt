@@ -1299,8 +1299,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         while (k < text.length && text[k].isWhitespace()) k++
         if (k >= text.length || k !in pages[page] until pageEnd(page)) return   // next chapter: its page opens at the top
         val (s, e) = sentenceAround(k)
-        if (narrator.isPlayingFile) {
-            // pre-made audio: the phone is idle, so a glide over the pause is smooth
+        if (narrator.isPlayingFile && !RenderManager.isBusy) {
+            // pre-made audio and nothing being made in the background: the phone is idle, so a glide is smooth
             val target = centeredOn(s, e) ?: return
             glideTo(target, ms.toLong().coerceIn(220, 650))
             return
@@ -1338,7 +1338,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val win = visibleWindow()
         if (top >= win.first && bottom <= win.last) return
         if (followAnim?.isRunning == true) return
-        if (narrator.isPlayingFile) {
+        if (narrator.isPlayingFile && !RenderManager.isBusy) {
             val target = centeredOn(spoken.first, spoken.second) ?: return
             glideTo(target, 320)
         } else {

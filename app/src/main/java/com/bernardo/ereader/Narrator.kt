@@ -60,6 +60,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         private const val MIN_CLAUSE_WORDS_BEFORE = 1
         private const val MIN_CLAUSE_WORDS_AFTER = 2
         private const val CLOSERS = "\"'”’»)]"
+        /** How far ahead of the reported playback position the marks run: the output path's latency, roughly. */
+        private const val WORD_LEAD_LIVE_MS = 60L
+        private const val WORD_LEAD_FILE_MS = 140L
         /** Bump when the way audio is made changes, so cached audio from before isn't reused. */
         private const val AUDIO_VERSION = 3
         private val SPACED_ELLIPSIS = Regex("\\.( \\.){2,}")
@@ -390,7 +393,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         private val tick = object : Runnable {
             override fun run() {
                 if (released) return
-                val pos = positionMs()
+                // MediaPlayer reports its position coarsely and behind the sound: look a little ahead, so the
+                // sentence and word marks don't trail the voice
+                val pos = positionMs() + WORD_LEAD_FILE_MS
                 val idx = indexAt(sync, pos)
                 if (idx != shown) { shown = idx; listener.onSentence(sync[idx].start, sync[idx].end) }
                 // the pause before the next sentence (the file was made with [madePause] between sentences)
@@ -1240,7 +1245,9 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             val c: Chunk?; val base: Long
             if (head >= ph.chunkBase) { c = ph.chunk; base = ph.chunkBase } else { c = ph.prev; base = ph.prevBase }
             val w = c?.words ?: return emitWord(-1, -1)
-            val i = w.at((head - base) * 1000 / ph.rate)
+            // the play head is where the mixer is; the speaker (or earphones) is a little behind it, and the eye
+            // should land on the word just before it's heard, not after
+            val i = w.at((head - base) * 1000 / ph.rate + WORD_LEAD_LIVE_MS)
             if (i < 0) emitWord(-1, -1) else emitWord(w.starts[i], w.ends[i])
         }
 
