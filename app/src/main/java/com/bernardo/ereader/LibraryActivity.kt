@@ -270,9 +270,13 @@ class LibraryActivity : Activity() {
                     setPadding(0, (6 * d).toInt(), 0, 0)
                 })
                 addView(TextView(this@LibraryActivity).apply {
-                    val audio = if (Renders.list(this@LibraryActivity, b.id).any { it.ready }) "🎧" else null
-                    text = listOfNotNull(b.author, if (b.progress > 0) "${b.progress}%" else "New", audio).joinToString("  ·  ")
+                    text = listOfNotNull(b.author, if (b.progress > 0) "${b.progress}%" else "New").joinToString("  ·  ")
                     setTextColor(th.dim)
+                    // has a ready audio file: a small headphones mark at the end of the line
+                    if (Renders.list(this@LibraryActivity, b.id).any { it.ready }) {
+                        Icons.trailing(this, R.drawable.ic_headphones, th.dim, sizeDp = 14f, gapDp = 4f)
+                        contentDescription = "$text, has an audio file"
+                    }
                     textSize = 11.5f
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END

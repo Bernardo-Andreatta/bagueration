@@ -7,6 +7,8 @@ import android.graphics.Typeface
 import android.text.Layout
 import android.text.SpannableString
 import android.text.style.AlignmentSpan
+import android.text.style.CharacterStyle
+import android.text.style.ParagraphStyle
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
@@ -263,9 +265,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             setPadding(dp(6), dp(4), dp(6), dp(4))
         }
         lateinit var popup: PopupWindow
-        fun action(label: String, onClick: () -> Unit) = TextView(this).apply {
-            text = label; textSize = 14f; setTextColor(th.onAccent)
+        fun action(label: String, icon: Int? = null, onClick: () -> Unit) = TextView(this).apply {
+            text = label; textSize = 14f; setTextColor(th.onAccent); gravity = Gravity.CENTER_VERTICAL
+            isSingleLine = true
             setPadding(dp(10), dp(8), dp(10), dp(8))
+            if (icon != null) Icons.leading(this, icon, th.onAccent, sizeDp = 18f, gapDp = 6f)
+            contentDescription = label
             setOnClickListener { popup.dismiss(); onClick() }
         }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -277,16 +282,26 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                 maxWidth = (resources.displayMetrics.widthPixels * 0.8).toInt()
                 setPadding(dp(10), dp(8), dp(10), dp(2))
             })
-            row.addView(action("▶ Read") { startReading(s) })
+            row.addView(action("Read", R.drawable.ic_play) { startReading(s) })
             row.addView(action("Edit") { editNote(note) })
             row.addView(action("Delete") { removeAnnotation(note) })
         } else {
             val marked = annotations.firstOrNull { !it.isNote && it.start == s }
-            row.addView(action("▶ Read from here") { startReading(s) })
-            row.addView(action(if (marked != null) "🔖 Remove" else "🔖 Bookmark") {
+            row.addView(action("Read from here", R.drawable.ic_play) { startReading(s) })
+            row.addView(action(if (marked != null) "Remove" else "Bookmark",
+                if (marked != null) R.drawable.ic_bookmark_remove else R.drawable.ic_bookmark) {
                 if (marked != null) removeAnnotation(marked) else addBookmark(s, e)
             })
-            row.addView(action("✎ Note") { editNote(null, s, e) })
+            row.addView(action("Note", R.drawable.ic_note) { editNote(null, s, e) })
+        }
+        // keep the buttons on one line: on a narrow screen or with large text, tighten them, then drop the labels of
+        // the icon buttons after the first (a squeezed "Note" used to wrap letter by letter)
+        val avail = resources.displayMetrics.widthPixels - dp(32)
+        fun rowWidth(): Int { row.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED); return row.measuredWidth + dp(12) }
+        val buttons = (0 until row.childCount).map { row.getChildAt(it) as TextView }
+        if (rowWidth() > avail) buttons.forEach { it.setPadding(dp(7), dp(8), dp(7), dp(8)); it.textSize = 13f }
+        if (rowWidth() > avail) buttons.drop(1).filter { it.compoundDrawablesRelative[0] != null }.forEach {
+            it.text = ""; it.compoundDrawablePadding = 0; it.setPadding(dp(10), dp(8), dp(10), dp(8))
         }
         bubble.addView(row)
         popup = PopupWindow(bubble, android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -367,10 +382,23 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     /** Re-draw the page's marks (bookmarks, notes, left-off) without moving it. */
     private fun refreshPageSpans() {
         if (bookId == null || pages.isEmpty()) return
-        val y = scroll.scrollY
-        pageView.setText(styledPage(page), TextView.BufferType.SPANNABLE)
+        val fresh = styledPage(page)
+        val cur = pageView.text as? Spannable
+        if (cur != null && cur.length == fresh.length) {
+            // swap the marks on the text already shown: setText on a selectable TextView puts the cursor back at the
+            // start and scrolls the page to the top (pausing did that, to add the left-off underline)
+            for (s in cur.getSpans(0, cur.length, Any::class.java)) {
+                if ((s is CharacterStyle || s is ParagraphStyle) && s !== highlight && s !== tapMark) cur.removeSpan(s)
+            }
+            for (s in fresh.getSpans(0, fresh.length, Any::class.java)) {
+                cur.setSpan(s, fresh.getSpanStart(s), fresh.getSpanEnd(s), fresh.getSpanFlags(s))
+            }
+        } else {
+            val y = scroll.scrollY
+            pageView.setText(fresh, TextView.BufferType.SPANNABLE)
+            scroll.post { scroll.scrollTo(0, y) }
+        }
         if (narrator.isPlaying && spoken.first in pages[page] until pageEnd(page)) highlightSpoken()
-        scroll.post { scroll.scrollTo(0, y) }
     }
 
     private fun sentenceAroundIn(offset: Int, lo: Int, hi: Int): Pair<Int, Int> {
@@ -549,7 +577,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         Themes.dialog(this).setTitle("Reading aloud, live")
             .setMessage("The voice is made on your phone as it reads. Over long sessions that can warm the phone up and use " +
                 "more battery, and a warm phone (or a locked screen) makes the voice slower to prepare.\n\n" +
-                "To avoid that, pre-load chapters: the audio is made once ahead of time, then plays with no loading." +
+                "To avoid that, pre-load chapters: the audio is made once ahead of time, then plays with no loading. " +
+                "You can start listening after the first few minutes, while the rest is made." +
                 if (restricted) "\n\nYour phone also slows this app down a lot with the screen off. Allowing unrestricted battery use helps." else "")
             .setPositiveButton("Read aloud") { _, _ -> seen(); startReading(from) }
             .setNegativeButton("Pre-load chapters") { _, _ -> seen(); openRenders() }
@@ -658,14 +687,14 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                      }
                 1 -> {
                     val marks = annotations.filter { !it.isNote }
-                    if (marks.isEmpty()) listBox.addView(row("No bookmarks yet", "Tap a sentence and choose 🔖 Bookmark.", false) {})
+                    if (marks.isEmpty()) listBox.addView(row("No bookmarks yet", "Tap a sentence and choose Bookmark.", false) {})
                     marks.forEach { a -> listBox.addView(row(snippet(a), chapterOf(a.start), false) { jump(a.start) }.apply {
                         setOnLongClickListener { removeAnnotation(a); dialog.dismiss(); showChapters(1); true }
                     }) }
                 }
                 else -> {
                     val notes = annotations.filter { it.isNote }
-                    if (notes.isEmpty()) listBox.addView(row("No notes yet", "Tap a sentence (or select text) and choose ✎ Note.", false) {})
+                    if (notes.isEmpty()) listBox.addView(row("No notes yet", "Tap a sentence (or select text) and choose Note.", false) {})
                     notes.forEach { a ->
                         val title = SpannableString(a.note!!).apply { setSpan(StyleSpan(Typeface.BOLD), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
                         listBox.addView(row(title, "“${snippet(a)}”" + (chapterOf(a.start)?.let { " · $it" } ?: ""), false) { jump(a.start) }.apply {
@@ -751,7 +780,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             sp.setSpan(RelativeSizeSpan(1.45f), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             sp.setSpan(StyleSpan(Typeface.BOLD), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             sp.setSpan(ForegroundColorSpan(th.heading), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            sp.setSpan(AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER), s, pe, Spannable.SPAN_PARAGRAPH)
+            // centered only when the heading is a paragraph of its own: a PDF heading can run into the text after it
+            // (or start mid-line), and a paragraph span that doesn't cover whole paragraphs crashes
+            val wholeParagraph = (s == 0 || sp[s - 1] == '\n') && (pe == sp.length || sp[pe - 1] == '\n')
+            if (wholeParagraph) sp.setSpan(AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER), s, pe, Spannable.SPAN_PARAGRAPH)
         }
         return sp
     }
@@ -998,16 +1030,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val making = RenderManager.current?.takeIf { it.render.bookId == id }
         val here = if (pages.isNotEmpty()) Renders.playableAt(this, id, pages[page]) else null
         val (label, icon) = when {
-            making != null -> "Making ${(making.fraction * 100).toInt()}%" to R.drawable.ic_download
-            here != null -> "Audio file" to R.drawable.ic_play
+            making != null -> "Making ${(making.fraction * 100).toInt()}%" to R.drawable.ic_graphic_eq
+            here != null -> "Audio file" to R.drawable.ic_headphones
             else -> "Pre-load" to R.drawable.ic_download
         }
         audioChip.text = label
-        val d = getDrawable(icon)?.mutate()?.apply {
-            setTint(th.accent)
-            val px = (15 * resources.displayMetrics.density).toInt(); setBounds(0, 0, px, px)
-        }
-        audioChip.setCompoundDrawables(d, null, null, null)
+        audioChip.setCompoundDrawablesRelative(Icons.get(this, icon, th.accent, 16f), null, null, null)
         audioChip.contentDescription = when {
             making != null -> "Audio file being made, ${(making.fraction * 100).toInt()} percent. Open audio files"
             here != null -> "This chapter plays from an audio file. Open audio files"

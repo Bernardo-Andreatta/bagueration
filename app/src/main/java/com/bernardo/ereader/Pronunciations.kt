@@ -87,13 +87,15 @@ object Pronunciations {
             })
             addView(all)
             addView(TextView(act).apply {
-                text = "▶  Test"; textSize = 14f; setTextColor(th.accent); gravity = Gravity.CENTER
-                setPadding(dp(12), dp(10), dp(12), dp(10))
+                text = "Test"; textSize = 14f; setTextColor(th.accent); gravity = Gravity.CENTER
+                Icons.leading(this, R.drawable.ic_play, th.accent)
+                setPadding(dp(16), dp(9), dp(18), dp(9))
+                background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setStroke(dp(1), th.accent) }
                 setOnClickListener {
                     val say = sayField.text.toString().ifBlank { wordField.text.toString() }
                     Narrator.instance?.preview(say)
                 }
-            })
+            }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8); bottomMargin = dp(4) })
         }
         Themes.dialog(act).setTitle(if (existing == null) "Fix pronunciation" else "Edit pronunciation")
             .setView(box)

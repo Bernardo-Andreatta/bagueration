@@ -45,13 +45,15 @@ object PdfParser {
                 }
                 sb.append(page)
             }
-            val text = sb.toString()
-            if (text.count { it.isLetter() } < 200) error("this PDF has no text layer (scanned pages can't be read aloud)")
+            val joined = sb.toString()
+            if (joined.count { it.isLetter() } < 200) error("this PDF has no text layer (scanned pages can't be read aloud)")
+            val outline = outlineChapters(doc, pageStarts, joined)
+            val text = headingsOnOwnLine(joined, outline)
 
             val info = doc.documentInformation
             return Book(
                 text = text,
-                chapters = outlineChapters(doc, pageStarts, text).ifEmpty { BookParser.detectTxtChapters(text) },
+                chapters = outline.ifEmpty { BookParser.detectTxtChapters(text) },
                 styles = IntArray(0),
                 title = info?.title?.takeIf { it.isNotBlank() },
                 author = info?.author?.takeIf { it.isNotBlank() },
@@ -71,6 +73,21 @@ object PdfParser {
             .replace(Regex("[ \t]+"), " ")
             .replace(Regex("\n{3,}"), "\n\n")
             .trim()
+    }
+
+    /**
+     * Unwrapping joins a chapter's title line to the text after it ("Capítulo 1 Era uma vez"), and a page that
+     * continues a sentence starts mid-line. Where the page opens with the title, turn the space before and after it
+     * into a line break, so the heading is a paragraph of its own (same length: chapter offsets stay valid).
+     */
+    internal fun headingsOnOwnLine(text: String, chapters: List<Chapter>): String {
+        val c = text.toCharArray()
+        for (ch in chapters) {
+            if (ch.headEnd <= ch.start) continue   // the page doesn't open with the title: don't break a running sentence
+            if (ch.start in 1..c.size && c[ch.start - 1] == ' ') c[ch.start - 1] = '\n'
+            if (ch.headEnd < c.size && c[ch.headEnd] == ' ') c[ch.headEnd] = '\n'
+        }
+        return String(c)
     }
 
     /** Top-level (and second-level) bookmarks -> chapters at the start of their page. */

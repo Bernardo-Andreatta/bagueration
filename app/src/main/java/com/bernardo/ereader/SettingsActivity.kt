@@ -27,6 +27,11 @@ class SettingsActivity : Activity() {
         const val SECTION_APPEARANCE = "appearance"
         const val EXTRA_BOOK_ID = "book_id"
         const val EXTRA_BOOK_LANG = "book_lang"
+
+        // layout, in dp: page margin, card padding, and how far rows reach into the card padding
+        private const val PAGE_PAD = 16
+        private const val CARD_PAD = 20
+        private const val ROW_INSET = 10
     }
 
     private val prefs by lazy { BookStore.prefs(this) }
@@ -36,11 +41,17 @@ class SettingsActivity : Activity() {
     private val narrator get() = Narrator.instance
     private var appearanceCard: View? = null
     private var previewButton: TextView? = null
-    private val previewIdle = "▶  Play sample"
     private val previewWatch = object : Runnable {
         override fun run() {
-            if (narrator?.isPreviewing == true) previewButton?.postDelayed(this, 300) else previewButton?.text = previewIdle
+            if (narrator?.isPreviewing == true) previewButton?.postDelayed(this, 300) else showPreviewState(false)
         }
+    }
+
+    /** The sample button reads "Play sample" or "Stop", with the matching icon. */
+    private fun showPreviewState(playing: Boolean) {
+        val b = previewButton ?: return
+        b.text = if (playing) "Stop" else "Play sample"
+        Icons.leading(b, if (playing) R.drawable.ic_stop else R.drawable.ic_play, th.onAccent)
     }
 
     /**
@@ -57,7 +68,7 @@ class SettingsActivity : Activity() {
     private fun playPreview() {
         val v = currentVoice()
         narrator?.preview(Voices.sample(v.lang)) ?: return   // same standard line as the voice picker
-        previewButton?.text = "■  Stop"
+        showPreviewState(true)
         previewButton?.removeCallbacks(previewWatch)
         previewButton?.postDelayed(previewWatch, 300)
     }
@@ -78,26 +89,22 @@ class SettingsActivity : Activity() {
         actionBar?.setDisplayHomeAsUpEnabled(true)
         actionBar?.setHomeAsUpIndicator(getDrawable(R.drawable.ic_chevron_left)?.mutate()?.apply { setTint(th.text) })
 
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(8), dp(14), dp(28)) }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(PAGE_PAD), dp(4), dp(PAGE_PAD), dp(32)) }
         col.addView(voiceCard())
+        col.addView(presetCard().also { presetCardView = it })
         col.addView(pausesCard())
-        if (bookId != null) col.addView(card("Audio files") {
+        if (bookId != null) col.addView(card("Audio files", R.drawable.ic_headphones) {
             val n = Renders.list(this@SettingsActivity, bookId!!).count { it.ready }
-            addView(row("Audio files for this book", if (n == 0) "none yet" else "$n ready") {
+            addView(row("Audio files for this book", if (n == 0) "None yet" else "$n ready") {
                 startActivity(android.content.Intent(this@SettingsActivity, RendersActivity::class.java).putExtra(RendersActivity.EXTRA_BOOK, bookId))
             })
             addView(hintView("Make audio ahead of time for a few chapters: it plays with no loading, even on a warm phone."))
         })
         if (bookId != null) col.addView(pronunciationsCard())
         col.addView(appearanceCard().also { appearanceCard = it })
-        col.addView(TextView(this).apply {
-            text = "Reset to defaults"
-            textSize = 14f; gravity = Gravity.CENTER; setTextColor(th.accent)
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = GradientDrawable().apply { cornerRadius = dp(18).toFloat(); setStroke(dp(1), th.accent) }
-            setOnClickListener { confirmResetAll() }
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
         col.addView(aboutCard())
+        col.addView(button("Reset to defaults", R.drawable.ic_reset, filled = false) { confirmResetAll() },
+            LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(20) })
         val scroll = ScrollView(this).apply { setBackgroundColor(th.bg); addView(col) }
         val old = scrollView
         scrollView = scroll
@@ -129,79 +136,98 @@ class SettingsActivity : Activity() {
 
     // ---------- sections ----------
 
-    private fun voiceCard() = card("Voice") {
+    private fun voiceCard() = card("Voice", R.drawable.ic_voice) {
         val v = currentVoice()
         addView(row("Voice", "${v.name}  ·  ${Voices.LANGUAGES[v.lang]}") { pickVoice() })
-        addView(presetRow(v))
-        Voices.blendPartner(v)?.let { partner ->
-            addView(label("Blend with ${partner.name}"))
-            addView(chips(listOf("Off" to "0", "Light" to "1", "Half" to "2"), Voices.blendLevel(this@SettingsActivity, v).toString()) { lvl ->
-                Voices.setBlendLevel(this@SettingsActivity, v, lvl.toInt())
-                soundChanged(regenerate = true)
-            })
-            addView(hintView("Mixes in some of ${partner.name}, the steadiest ${v.note.substringBefore(" ·")} voice. Smooths out hesitations while keeping ${v.name}'s character."))
-        }
         bookLang?.let { lang ->
             val hasVoice = Voices.defaultFor(this@SettingsActivity, lang) != null
             addView(hintView("This book is in ${Voices.LANGUAGES[lang] ?: lang}." +
-                if (!hasVoice) " You don't have a voice for it yet — tap Voice to get one." else ""))
+                if (!hasVoice) " You don't have a voice for it yet. Tap Voice to get one." else ""))
         }
-        addView(TextView(this@SettingsActivity).apply {
-            text = if (narrator?.isPreviewing == true) "■  Stop" else previewIdle
-            textSize = 14f
-            setTextColor(th.onAccent)
-            gravity = Gravity.CENTER
-            setPadding(dp(16), dp(10), dp(16), dp(10))
-            background = pill(th.accent)
-            previewButton = this
-            setOnClickListener {
-                if (narrator?.isPreviewing == true) { narrator?.stop(); text = previewIdle } else playPreview()
-            }
-        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4); bottomMargin = dp(8) })
-        addView(hintView(if (narrator?.let { it.isPlaying && !it.isPreviewing } == true)
-            "Changes apply to the book as it reads." else "The sample replays when you change speed or pauses."))
+        val reading = narrator?.let { it.isPlaying && !it.isPreviewing } == true
+        addView(button("Play sample", R.drawable.ic_play, filled = true) {
+            if (narrator?.isPreviewing == true) { narrator?.stop(); showPreviewState(false) } else playPreview()
+        }.also {
+            previewButton = it
+            showPreviewState(narrator?.isPreviewing == true)
+            if (narrator?.isPreviewing == true) it.postDelayed(previewWatch, 300)   // rebuilt mid-sample: keep watching
+        },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8); bottomMargin = dp(6) })
+        addView(hintView(if (reading) "Changes apply to the book as it reads." else "The sample replays when you change speed or pauses."))
 
+        addView(divider())
         slider("Speed", 0.5f, 2.0f, 0.05f, prefs.getFloat("speed", 1.0f), default = rec().speed,
             format = { "${"%.2f".format(Locale.US, it).trimEnd('0').trimEnd('.')}×" }) { v ->
             prefs.edit().putFloat("speed", v).apply()
             narrator?.speed = v
             soundChanged(regenerate = true)
+            refreshPresets()
+        }
+        Voices.blendPartner(v)?.let { partner ->
+            addView(label("Blend with ${partner.name}"))
+            addView(chips(listOf("Off" to "0", "Light" to "1", "Half" to "2"), Voices.blendLevel(this@SettingsActivity, v).toString()) { lvl ->
+                Voices.setBlendLevel(this@SettingsActivity, v, lvl.toInt())
+                soundChanged(regenerate = true)
+                refreshPresets()
+            })
+            addView(hintView("Mixes in some of ${partner.name}, the steadiest ${v.note.substringBefore(" ·")} voice. Smooths out hesitations while keeping ${v.name}'s character."))
         }
     }
 
     /** Recommended settings for the voice in use ("Default" on the sliders). */
     private fun rec() = Presets.recommended(currentVoice())
 
-    /** "Settings for <voice>": use recommended / use mine / save current as mine. */
-    private fun presetRow(v: VoiceInfo) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(0, dp(2), 0, dp(8))
+    /**
+     * Presets for the voice in use, as a choice list: its recommended settings, the ones you saved for it,
+     * and (when the sliders match neither) your unsaved changes, with a button to keep those as yours.
+     */
+    private fun presetCard() = card("Presets for ${currentVoice().name}", R.drawable.ic_graphic_eq) {
+        val v = currentVoice()
         val recommended = Presets.recommended(v)
         val mine = Presets.custom(this@SettingsActivity, v)
         val now = VoicePreset.current(this@SettingsActivity, v)
-        val status = when (now) {
-            recommended -> "Using ${v.name}'s recommended settings."
-            mine -> "Using your saved settings for ${v.name}."
-            else -> "Custom settings."
-        }
-        addView(hintView("$status\nRecommended: ${recommended.describe()}"))
-        val chips = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.HORIZONTAL }
-        fun chip(label: String, onClick: () -> Unit) = TextView(this@SettingsActivity).apply {
-            text = label; textSize = 13f; setTextColor(th.accent); gravity = Gravity.CENTER
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); setStroke(dp(1), th.accent) }
-            setOnClickListener { onClick() }
-        }.also { chips.addView(it, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) }) }
-        if (now != recommended) chip("Use recommended") { applyPreset(recommended) }
-        if (mine != null && now != mine) chip("Use mine") { applyPreset(mine) }
-        if (now != mine) chip("Save as mine") {
+        val selected = when (now) { recommended -> 0; mine -> 1; else -> 2 }
+        addView(hintView("Speed, pauses and blend together. Pick one, or adjust the sliders and save the result as yours."))
+
+        val list = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.VERTICAL }
+        list.addView(choiceRow("Recommended", recommended.describe(), selected == 0) { applyPreset(recommended) })
+        list.addView(if (mine != null) choiceRow("Yours", mine.describe(), selected == 1) { applyPreset(mine) }.apply {
+            setOnLongClickListener { confirmForgetPreset(v); true }
+        } else choiceRow("Yours", "Not saved yet.", false, enabled = false) {})
+        if (selected == 2) list.addView(choiceRow("Unsaved changes", now.describe(), true) {})
+        addView(list, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); marginStart = -dp(ROW_INSET); marginEnd = -dp(ROW_INSET) })
+
+        if (selected == 2) addView(button(if (mine == null) "Save as mine" else "Replace mine with these", R.drawable.ic_save, filled = false) {
             Presets.saveCustom(this@SettingsActivity, v, now)
             Toast.makeText(this@SettingsActivity, "Saved as your settings for ${v.name}", Toast.LENGTH_SHORT).show()
             build()
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10); bottomMargin = dp(6) })
+        if (mine != null) addView(hintView("Hold Yours to forget it."))
+    }
+
+    private var presetCardView: View? = null
+    /** The control just changed, kept still on screen when the preset card above it changes height. */
+    private var touched: View? = null
+
+    /** Redraw just the preset card after a sound setting changed (no full rebuild, so nothing flickers). */
+    private fun refreshPresets() {
+        val old = presetCardView ?: return
+        val parent = old.parent as? LinearLayout ?: return
+        val swap = {
+            val i = parent.indexOfChild(old)
+            val fresh = presetCard().also { presetCardView = it }
+            parent.removeViewAt(i)
+            parent.addView(fresh, i)
         }
-        if (chips.childCount > 0) addView(android.widget.HorizontalScrollView(this@SettingsActivity).apply {
-            isHorizontalScrollBarEnabled = false; addView(chips)
-        })
+        touched?.takeIf { it.isAttachedToWindow }?.let { keepInPlace(it, swap) } ?: swap()
+    }
+
+    private fun confirmForgetPreset(v: VoiceInfo) {
+        Themes.dialog(this).setTitle("Forget your settings for ${v.name}?")
+            .setMessage("The sliders stay as they are now; only the saved preset goes.")
+            .setPositiveButton("Forget") { _, _ -> Presets.deleteCustom(this, v); build() }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun applyPreset(p: VoicePreset) {
@@ -226,7 +252,7 @@ class SettingsActivity : Activity() {
         d.show()
     }
 
-    private fun pausesCard() = card("Pauses & phrasing") {
+    private fun pausesCard() = card("Pauses & phrasing", R.drawable.ic_timer) {
         val phr = prefs.getInt("phrasing", 2)
         addView(label("Phrasing"))
         addView(chips(listOf("One sentence" to "1", "Natural" to "2", "Long" to "3"), phr.toString()) { v ->
@@ -242,6 +268,7 @@ class SettingsActivity : Activity() {
             prefs.edit().putInt("pause", v.toInt()).apply()
             narrator?.pauseMs = v.toInt()
             soundChanged(regenerate = false)
+            refreshPresets()
         }
 
         lateinit var commaSlider: View
@@ -251,12 +278,14 @@ class SettingsActivity : Activity() {
             narrator?.commaPauses = on
             commaSlider.alpha = if (on) 1f else 0.4f
             soundChanged(regenerate = true)
+            refreshPresets()
         })
         commaSlider = slider("Comma pause length", 50f, 600f, 10f, prefs.getInt("comma_pause", 180).toFloat(), default = rec().commaPauseMs.toFloat(),
             format = { "${it.toInt()} ms" }) { v ->
             prefs.edit().putInt("comma_pause", v.toInt()).apply()
             narrator?.commaPauseMs = v.toInt()
             soundChanged(regenerate = false)
+            refreshPresets()
         }
         if (!prefs.getBoolean("comma_pauses", true)) commaSlider.alpha = 0.4f
 
@@ -267,38 +296,38 @@ class SettingsActivity : Activity() {
             prefs.edit().putInt("max_gap", ms).apply()
             narrator?.maxGapMs = ms
             soundChanged(regenerate = true)
+            refreshPresets()
         }
     }
 
-    private fun pronunciationsCard() = card("Pronunciations") {
+    private fun pronunciationsCard() = card("Pronunciations", R.drawable.ic_spellcheck) {
         val list = Pronunciations.list(this@SettingsActivity, bookId)
         if (list.isEmpty()) {
             addView(hintView("Names the voice gets wrong? Long-press a word in the book and choose Fix pronunciation, or add one here."))
         }
         for (p in list) addView(LinearLayout(this@SettingsActivity).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(8), 0, dp(8))
-            addView(TextView(this@SettingsActivity).apply {
-                text = "${p.word}  →  ${p.sayAs}"; textSize = 15f; setTextColor(th.text)
+            setPadding(dp(ROW_INSET), dp(8), dp(4), dp(8))
+            background = pressable()
+            addView(LinearLayout(this@SettingsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@SettingsActivity).apply { text = p.word; textSize = 15f; setTextColor(th.text) })
+                addView(TextView(this@SettingsActivity).apply {
+                    text = "Says \u201C${p.sayAs}\u201D" + if (p.allBooks) "  ·  all books" else ""
+                    textSize = 13f; setTextColor(th.dim)
+                })
             }, LinearLayout.LayoutParams(0, -2, 1f))
-            if (p.allBooks) addView(TextView(this@SettingsActivity).apply { text = "all books"; textSize = 11f; setTextColor(th.dim); setPadding(dp(8), 0, dp(8), 0) })
-            addView(android.widget.ImageButton(this@SettingsActivity).apply {
-                setImageResource(R.drawable.ic_play); imageTintList = ColorStateList.valueOf(th.accent)
-                background = null; contentDescription = "Hear ${p.word}"
-                setOnClickListener { narrator?.preview(p.sayAs) }
-            }, LinearLayout.LayoutParams(dp(36), dp(36)))
+            addView(iconButton(R.drawable.ic_play, "Hear ${p.word}") { narrator?.preview(p.sayAs) })
             setOnClickListener { Pronunciations.edit(this@SettingsActivity, bookId, p.word, p) { build() } }
-        })
-        addView(TextView(this@SettingsActivity).apply {
-            text = "+  Add a word"; textSize = 14f; setTextColor(th.accent)
-            setPadding(0, dp(10), 0, dp(4))
-            setOnClickListener { Pronunciations.edit(this@SettingsActivity, bookId, "") { build() } }
-        })
+        }, insetParams())
+        addView(button("Add a word", R.drawable.ic_add, filled = false) {
+            Pronunciations.edit(this@SettingsActivity, bookId, "") { build() }
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8); bottomMargin = dp(6) })
     }
 
     private var sample: TextView? = null
 
-    private fun appearanceCard() = card("Appearance") {
+    private fun appearanceCard() = card("Appearance", R.drawable.ic_palette) {
         // live preview of how the page will look
         addView(TextView(this@SettingsActivity).apply {
             setText(sampleText(), TextView.BufferType.SPANNABLE)
@@ -385,7 +414,7 @@ class SettingsActivity : Activity() {
         }
         addView(justifyRow)
         lateinit var paperRow: View
-        paperRow = switch("Paper texture", Themes.paperTexture(this@SettingsActivity), "A soft paper grain behind the page.") { on ->
+        paperRow = switch("Paper texture", Themes.paperTexture(this@SettingsActivity), "Recycled paper behind the page: soft grain, tiny flecks and fibers.") { on ->
             prefs.edit().putBoolean("paper_texture", on).apply(); keepInPlace(paperRow) { refreshSample() }
         }
         addView(paperRow)
@@ -445,8 +474,7 @@ class SettingsActivity : Activity() {
     private fun swatches(colors: List<Int>, selected: Int, onPick: (Int) -> Unit): View {
         val all = if (selected in colors) colors else listOf(selected) + colors
         val size = dp(36); val gap = dp(10)
-        // card padding (18dp each side) + page padding (14dp each side)
-        val usable = resources.displayMetrics.widthPixels - dp(2 * 18 + 2 * 14)
+        val usable = resources.displayMetrics.widthPixels - dp(2 * CARD_PAD + 2 * PAGE_PAD)
         val perRow = maxOf(4, (usable + gap) / (size + gap))
         val cells: List<View> = all.map { c ->
             View(this).apply {
@@ -457,8 +485,9 @@ class SettingsActivity : Activity() {
                 contentDescription = String.format("#%06X", c and 0xFFFFFF)
                 setOnClickListener { onPick(c) }
             }
-        } + TextView(this).apply {
-            text = "+"; textSize = 20f; gravity = Gravity.CENTER; setTextColor(th.text)
+        } + android.widget.ImageView(this).apply {
+            setImageDrawable(Icons.get(this@SettingsActivity, R.drawable.ic_add, th.text, 20f))
+            scaleType = android.widget.ImageView.ScaleType.CENTER
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(1), th.dim) }
             contentDescription = "Pick any color"
             setOnClickListener { pickColor(selected, onPick) }
@@ -542,16 +571,11 @@ class SettingsActivity : Activity() {
             .show()
     }
 
-    private fun aboutCard() = card("About") {
-        addView(TextView(this@SettingsActivity).apply {
-            text = "Send debug log"; textSize = 14f; setTextColor(th.accent)
-            setPadding(0, dp(4), 0, dp(10))
-            setOnClickListener { AppLog.share(this@SettingsActivity) }
-        })
+    private fun aboutCard() = card("About", R.drawable.ic_info) {
+        addView(row("Send debug log", "Share it to report a problem") { AppLog.share(this@SettingsActivity) })
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""
-        addView(TextView(this@SettingsActivity).apply {
-            text = "bagueration $version\nWorks offline. Voices by Kokoro (built in) and Piper (downloads), running on sherpa-onnx."
-            textSize = 13f; setTextColor(th.dim); setLineSpacing(0f, 1.3f)
+        addView(hintView("bagueration $version\nWorks offline. Voices by Kokoro (built in) and Piper (downloads), running on sherpa-onnx.").apply {
+            setPadding(0, dp(6), 0, dp(6))
         })
     }
 
@@ -626,42 +650,38 @@ class SettingsActivity : Activity() {
             refreshButtons()
         }
 
-        fun header(text: String, accent: Boolean = true) = TextView(this).apply {
-            this.text = text.uppercase(); textSize = 11f; letterSpacing = 0.1f
-            setTextColor(if (accent) th.accent else th.dim); typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(12), dp(16), dp(12), dp(4))
+        fun header(text: String) = TextView(this).apply {
+            this.text = text.uppercase(); textSize = 12f; letterSpacing = 0.1f
+            setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(12), dp(18), dp(12), dp(6))
         }
 
         fun voiceRow(v: VoiceInfo): View = LinearLayout(this).apply {
             val installed = Voices.isInstalled(this@SettingsActivity, v)
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(6), dp(4), dp(6))
-            if (v.id == current.id) background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(th.highlight) }
-            addView(TextView(this@SettingsActivity).apply {
-                text = if (v.id == current.id) "●" else "○"; textSize = 14f; setTextColor(th.accent); setPadding(0, 0, dp(12), 0)
-            })
+            setPadding(dp(12), dp(8), dp(6), dp(8))
+            background = pressable(if (v.id == current.id) selectedFill() else null)
+            addView(android.widget.ImageView(this@SettingsActivity).apply {
+                val on = v.id == current.id
+                setImageDrawable(Icons.get(this@SettingsActivity, if (on) R.drawable.ic_radio_checked else R.drawable.ic_radio_unchecked,
+                    if (on) th.accent else th.dim, 20f))
+            }, LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(14) })
             addView(LinearLayout(this@SettingsActivity).apply {
                 orientation = LinearLayout.VERTICAL
-                addView(TextView(this@SettingsActivity).apply { text = v.name; textSize = 16f; setTextColor(th.text) })
+                addView(TextView(this@SettingsActivity).apply { text = v.name; textSize = 15f; setTextColor(th.text) })
                 addView(TextView(this@SettingsActivity).apply {
                     text = listOf(v.note, if (!installed) "${v.downloadMb} MB download" else if (!v.builtIn) "downloaded" else "")
                         .filter { it.isNotEmpty() }.joinToString("  ·  ")
-                    textSize = 12f; setTextColor(th.dim)
+                    textSize = 13f; setTextColor(th.dim)
                 })
             }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(android.widget.ImageButton(this@SettingsActivity).apply {
-                previewButtons[v.id] = this
-                setImageResource(if (installed) R.drawable.ic_play else R.drawable.ic_download)
-                imageTintList = ColorStateList.valueOf(th.accent)
-                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(1), th.accent) }
-                contentDescription = if (installed) "Preview ${v.name}" else "Download ${v.name}"
-                setOnClickListener {
-                    if (installed) togglePreview(v)
-                    else VoiceDownloader.withDialog(this@SettingsActivity, v) {
-                        dialog.dismiss(); pickVoice(); narrator?.preview(Voices.sample(v.lang), v.id)
-                    }
+            addView(iconButton(if (installed) R.drawable.ic_play else R.drawable.ic_download,
+                if (installed) "Preview ${v.name}" else "Download ${v.name}", outlined = true) {
+                if (installed) togglePreview(v)
+                else VoiceDownloader.withDialog(this@SettingsActivity, v) {
+                    dialog.dismiss(); pickVoice(); narrator?.preview(Voices.sample(v.lang), v.id)
                 }
-            }, LinearLayout.LayoutParams(dp(40), dp(40)))
+            }.also { previewButtons[v.id] = it })
             setOnClickListener {
                 if (installed) { selectVoice(v); dialog.dismiss() }
                 else VoiceDownloader.withDialog(this@SettingsActivity, v) { selectVoice(v); dialog.dismiss() }
@@ -682,12 +702,9 @@ class SettingsActivity : Activity() {
         if (detected != null) {
             val name = Voices.LANGUAGES[detected] ?: detected
             val voices = Voices.all.filter { it.lang == detected }
-            list.addView(TextView(this).apply {
-                text = "This book is in $name"; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(th.text)
-                setPadding(dp(12), dp(6), dp(12), 0)
-            })
+            list.addView(header("This book is in $name"))
             if (voices.isEmpty()) {
-                list.addView(hintView("There's no $name voice yet — pick any voice below.").apply { setPadding(dp(12), dp(4), dp(12), 0) })
+                list.addView(hintView("There's no $name voice yet. Pick any voice below.").apply { setPadding(dp(12), dp(4), dp(12), 0) })
             } else if (voices.none { Voices.isInstalled(this, it) } ||
                 (detected == "pt" && voices.none { !it.builtIn && Voices.isInstalled(this, it) })) {
                 // suggest downloading a voice in the book's language (for Portuguese: a Brazilian-trained one)
@@ -702,14 +719,9 @@ class SettingsActivity : Activity() {
                         else "You don't have a $name voice yet."
                         textSize = 13f; setTextColor(th.text)
                     })
-                    addView(TextView(this@SettingsActivity).apply {
-                        text = "⬇  Download ${first.name} · ${first.downloadMb} MB"
-                        textSize = 14f; setTextColor(th.onAccent); gravity = Gravity.CENTER
-                        setPadding(dp(14), dp(9), dp(14), dp(9)); background = pill(th.accent)
-                        setOnClickListener {
-                            VoiceDownloader.withDialog(this@SettingsActivity, first) {
-                                selectVoice(first); dialog.dismiss(); narrator?.preview(Voices.sample(first.lang), first.id)
-                            }
+                    addView(button("Download ${first.name} · ${first.downloadMb} MB", R.drawable.ic_download, filled = true) {
+                        VoiceDownloader.withDialog(this@SettingsActivity, first) {
+                            selectVoice(first); dialog.dismiss(); narrator?.preview(Voices.sample(first.lang), first.id)
                         }
                     }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
                 }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(4), dp(10), dp(4), dp(4)) })
@@ -722,7 +734,7 @@ class SettingsActivity : Activity() {
             val voices = Voices.all.filter { it.lang == lang }
             if (voices.isEmpty()) continue
             val builtIn = voices.any { it.builtIn }
-            list.addView(header(if (builtIn) name else "$name  ·  download", accent = builtIn))
+            list.addView(header(if (builtIn) name else "$name  ·  download"))
             voices.forEach { list.addView(voiceRow(it)) }
         }
         list.addView(hintView("Hold a downloaded voice to delete it.").apply { setPadding(dp(12), dp(14), dp(12), 0) })
@@ -740,48 +752,130 @@ class SettingsActivity : Activity() {
     }
 
     // ---------- building blocks ----------
+    // One visual language for every card: a header with an icon, rows that light up when pressed, labels,
+    // hints, segmented choices, sliders that show their default, and pill buttons (filled or outlined).
 
-    private fun card(title: String, content: LinearLayout.() -> Unit) = LinearLayout(this).apply {
+    private val medium by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
+
+    private fun card(title: String, icon: Int, content: LinearLayout.() -> Unit) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(18), dp(14), dp(18), dp(12))
-        background = GradientDrawable().apply { cornerRadius = dp(18).toFloat(); setColor(th.bar) }
+        setPadding(dp(CARD_PAD), dp(16), dp(CARD_PAD), dp(12))
+        clipToPadding = false   // rows reach into the padding so their pressed highlight has room around the text
+        background = GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(th.bar) }
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }
         addView(TextView(this@SettingsActivity).apply {
-            text = title.uppercase(); textSize = 12f; letterSpacing = 0.12f
-            setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, 0, 0, dp(6))
+            text = title.uppercase(); textSize = 12f; letterSpacing = 0.1f
+            setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_VERTICAL
+            Icons.leading(this, icon, th.accent, sizeDp = 18f, gapDp = 10f)
+            setPadding(0, 0, 0, dp(8))
         })
         content()
     }
 
+    /** Full-width row params that reach [ROW_INSET] into the card padding on both sides. */
+    private fun insetParams() = LinearLayout.LayoutParams(-1, -2).apply { marginStart = -dp(ROW_INSET); marginEnd = -dp(ROW_INSET) }
+
+    private fun divider() = View(this).apply {
+        setBackgroundColor(Themes.mix(th.bar, th.text, 0.12f))
+        layoutParams = LinearLayout.LayoutParams(-1, maxOf(1, dp(1) / 2)).apply { topMargin = dp(10); bottomMargin = dp(4) }
+    }
+
     private fun label(t: String) = TextView(this).apply {
-        text = t; textSize = 15f; setTextColor(th.text); setPadding(0, dp(10), 0, dp(6))
+        text = t; textSize = 15f; setTextColor(th.text); setPadding(0, dp(14), 0, dp(8))
     }
 
     private fun hintView(t: String) = TextView(this).apply {
-        text = t; textSize = 12f; setTextColor(th.dim); setLineSpacing(0f, 1.2f); setPadding(0, 0, 0, dp(6))
+        text = t; textSize = 12.5f; setTextColor(th.dim); setLineSpacing(0f, 1.25f); setPadding(0, dp(2), 0, dp(6))
     }
 
-    private fun pill(color: Int) = GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(color) }
+    /** Background for tappable rows: rounded, with the accent ripple; [fill] marks the selected one. */
+    private fun pressable(fill: Int? = null): android.graphics.drawable.Drawable {
+        fun shape(c: Int) = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(c) }
+        return android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple(th.accent)), fill?.let(::shape), shape(-1))
+    }
 
+    private fun ripple(c: Int) = (c and 0xFFFFFF) or 0x33000000
+    private fun selectedFill() = Themes.mix(th.bar, th.accent, 0.16f)
+
+    /** A row that opens something: title, its current value underneath, and a chevron. */
     private fun row(title: String, value: String, onClick: () -> Unit) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, dp(10), 0, dp(10))
-        addView(TextView(this@SettingsActivity).apply { text = title; textSize = 15f; setTextColor(th.text) },
-            LinearLayout.LayoutParams(0, -2, 1f))
-        addView(TextView(this@SettingsActivity).apply { text = "$value  ›"; textSize = 14f; setTextColor(th.accent) })
+        minimumHeight = dp(56)
+        setPadding(dp(ROW_INSET), dp(8), dp(ROW_INSET - 4), dp(8))
+        background = pressable()
+        addView(LinearLayout(this@SettingsActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(this@SettingsActivity).apply { text = title; textSize = 15f; setTextColor(th.text) })
+            addView(TextView(this@SettingsActivity).apply { text = value; textSize = 13f; setTextColor(th.dim); setPadding(0, dp(2), 0, 0) })
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(android.widget.ImageView(this@SettingsActivity).apply {
+            setImageDrawable(Icons.get(this@SettingsActivity, R.drawable.ic_chevron_right, th.dim, 22f))
+        }, LinearLayout.LayoutParams(dp(22), dp(22)))
+        setOnClickListener { onClick() }
+        layoutParams = insetParams()
+    }
+
+    /** One option in a single-choice list: radio mark, title and a description. */
+    private fun choiceRow(title: String, summary: String, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(ROW_INSET), dp(10), dp(ROW_INSET), dp(10))
+            background = pressable(if (selected) selectedFill() else null)
+            addView(android.widget.ImageView(this@SettingsActivity).apply {
+                setImageDrawable(Icons.get(this@SettingsActivity, if (selected) R.drawable.ic_radio_checked else R.drawable.ic_radio_unchecked,
+                    if (selected) th.accent else th.dim, 20f))
+            }, LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(14); topMargin = dp(1) })
+            addView(LinearLayout(this@SettingsActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@SettingsActivity).apply {
+                    text = title; textSize = 15f; setTextColor(th.text); if (selected) typeface = medium
+                })
+                addView(TextView(this@SettingsActivity).apply {
+                    text = summary; textSize = 13f; setTextColor(th.dim); setLineSpacing(0f, 1.2f); setPadding(0, dp(2), 0, 0)
+                })
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            if (!enabled) alpha = 0.6f
+            if (enabled && !selected) setOnClickListener { onClick() }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) }
+        }
+
+    /** Pill button: filled (the main action) or outlined, with an optional leading icon. */
+    private fun button(text: String, icon: Int?, filled: Boolean, onClick: () -> Unit) = TextView(this).apply {
+        this.text = text; textSize = 14f; typeface = medium; gravity = Gravity.CENTER
+        val fg = if (filled) th.onAccent else th.accent
+        setTextColor(fg)
+        minHeight = dp(40)
+        setPadding(dp(if (icon != null) 16 else 20), dp(8), dp(20), dp(8))
+        icon?.let { Icons.leading(this, it, fg) }
+        background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple(if (filled) th.onAccent else th.accent)),
+            GradientDrawable().apply { cornerRadius = dp(20).toFloat(); if (filled) setColor(th.accent) else setStroke(dp(1), th.accent) }, null)
         setOnClickListener { onClick() }
     }
 
-    /** Labeled slider with live value; [onChange] fires on release. */
+    /** Round icon-only button (40dp touch target), in the accent color. */
+    private fun iconButton(icon: Int, description: String, outlined: Boolean = false, onClick: () -> Unit) =
+        android.widget.ImageButton(this).apply {
+            setImageResource(icon); imageTintList = ColorStateList.valueOf(th.accent)
+            scaleType = android.widget.ImageView.ScaleType.CENTER
+            val mask = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(-1) }
+            background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple(th.accent)),
+                if (outlined) GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(1), th.accent) } else null, mask)
+            contentDescription = description
+            setOnClickListener { onClick() }
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+        }
+
+    /** Labeled slider with live value and its default; [onChange] fires on release. */
     private fun LinearLayout.slider(
         title: String, min: Float, max: Float, step: Float, value: Float, default: Float,
         format: (Float) -> String, hint: String? = null, live: ((Float) -> Unit)? = null, onChange: (Float) -> Unit,
     ): View {
-        val box = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(8), 0, dp(4)) }
+        // reaches into the card padding like the rows, so the seek bar's thumb lines up with the text at both ends
+        val box = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, dp(4)) }
         val valueView = TextView(this@SettingsActivity).apply { textSize = 14f; setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD }
         box.addView(LinearLayout(this@SettingsActivity).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(ROW_INSET), 0, dp(ROW_INSET), 0)
             addView(TextView(this@SettingsActivity).apply { text = title; textSize = 15f; setTextColor(th.text) },
                 LinearLayout.LayoutParams(0, -2, 1f))
             addView(valueView)
@@ -791,11 +885,15 @@ class SettingsActivity : Activity() {
         valueView.text = format(value)
         fun idx(v: Float) = Math.round((v - min) / step).coerceIn(0, steps)
         val reset = TextView(this@SettingsActivity).apply {
-            text = "↺ Reset"; textSize = 13f; setTextColor(th.accent); setPadding(dp(12), dp(4), 0, dp(4))
+            text = "Reset"; textSize = 13f; setTextColor(th.accent); gravity = Gravity.CENTER_VERTICAL
+            Icons.leading(this, R.drawable.ic_reset, th.accent, sizeDp = 16f, gapDp = 4f)
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            background = pressable()
         }
         val bar = SeekBar(this@SettingsActivity).apply {
             this.max = steps
             progress = idx(value)
+            setPadding(dp(ROW_INSET), dp(8), dp(ROW_INSET), dp(8))
             progressTintList = ColorStateList.valueOf(th.accent)
             thumbTintList = ColorStateList.valueOf(th.accent)
             progressBackgroundTintList = ColorStateList.valueOf(th.dim)
@@ -806,54 +904,67 @@ class SettingsActivity : Activity() {
                     reset.visibility = if (p == idx(default)) View.INVISIBLE else View.VISIBLE
                 }
                 override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) = onChange(at(sb.progress))
+                override fun onStopTrackingTouch(sb: SeekBar) { touched = box; onChange(at(sb.progress)) }
             })
         }
-        box.addView(bar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        box.addView(bar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
         reset.visibility = if (idx(value) == idx(default)) View.INVISIBLE else View.VISIBLE
-        reset.setOnClickListener { bar.progress = idx(default); onChange(default) }
+        reset.setOnClickListener { touched = box; bar.progress = idx(default); onChange(default) }
         box.addView(LinearLayout(this@SettingsActivity).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            addView(TextView(this@SettingsActivity).apply { text = "Default: ${format(default)}"; textSize = 12f; setTextColor(th.dim) },
+            setPadding(dp(ROW_INSET), 0, dp(ROW_INSET - 8), 0)
+            addView(TextView(this@SettingsActivity).apply { text = "Default: ${format(default)}"; textSize = 12.5f; setTextColor(th.dim) },
                 LinearLayout.LayoutParams(0, -2, 1f))
             addView(reset)
         })
-        hint?.let { box.addView(hintView(it)) }
-        addView(box)
+        hint?.let { box.addView(hintView(it).apply { setPadding(dp(ROW_INSET), dp(2), dp(ROW_INSET), dp(6)) }) }
+        addView(box, insetParams())
         return box
     }
 
-    private fun switch(title: String, on: Boolean, hint: String?, onChange: (Boolean) -> Unit) =
+    private fun switch(title: String, on: Boolean, hint: String?, onChange: (Boolean) -> Unit): View =
         LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(0, dp(8), 0, dp(4))
+            orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, dp(4))
             addView(Switch(this@SettingsActivity).apply {
                 text = title; textSize = 15f; setTextColor(th.text); isChecked = on
+                minHeight = dp(40)
                 thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(th.accent, th.dim))
                 trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(th.highlight, th.bg))
-                setOnCheckedChangeListener { _, v -> onChange(v) }
+                setOnCheckedChangeListener { _, v -> touched = this@apply; onChange(v) }
             })
             hint?.let { addView(hintView(it)) }
         }
 
-    private fun chips(options: List<Pair<String, String>>, selected: String?, onPick: (String) -> Unit) =
+    /** Segmented choice: equal-width pills, the selected one filled. */
+    private fun chips(options: List<Pair<String, String>>, selected: String?, onPick: (String) -> Unit): View =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            // chips line up by their box, not their text baseline (a 2-line chip was pushed down and cut off)
+            isBaselineAligned = false
+            setPadding(0, 0, 0, dp(4))
+            val group = this
             val views = ArrayList<TextView>()
             fun paint(sel: String) = views.forEach { v ->
                 val on = v.tag == sel
                 v.setTextColor(if (on) th.onAccent else th.text)
                 v.background = GradientDrawable().apply {
                     cornerRadius = dp(18).toFloat()
-                    if (on) setColor(th.accent) else setStroke(dp(1), th.dim)
+                    if (on) setColor(th.accent) else setStroke(dp(1), Themes.mix(th.bar, th.dim, 0.7f))
                 }
             }
-            for ((name, value) in options) addView(TextView(this@SettingsActivity).apply {
-                text = name; tag = value; textSize = 14f; gravity = Gravity.CENTER
-                setPadding(dp(14), dp(8), dp(14), dp(8))
-                if (value == "serif") typeface = Typeface.SERIF
-                setOnClickListener { onPick(value); paint(value) }
-                views += this
-            }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
+            options.forEachIndexed { i, (name, value) ->
+                addView(TextView(this@SettingsActivity).apply {
+                    text = name; tag = value; textSize = 14f; gravity = Gravity.CENTER
+                    minHeight = dp(38)
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    // one line: shrink a long label ("One sentence") to fit its share of the row instead of wrapping
+                    isSingleLine = true
+                    setAutoSizeTextTypeUniformWithConfiguration(10, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+                    if (value == "serif") typeface = Typeface.SERIF
+                    setOnClickListener { touched = group; onPick(value); paint(value) }
+                    views += this
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i < options.size - 1) marginEnd = dp(8) })
+            }
             paint(selected ?: "")
         }
 }

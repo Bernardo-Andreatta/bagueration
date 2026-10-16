@@ -3,12 +3,20 @@ package com.bernardo.ereader
 import android.app.Activity
 import android.content.res.ColorStateList
 import android.graphics.Typeface
+import android.graphics.drawable.ClipDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -16,7 +24,8 @@ import android.widget.TextView
 
 /**
  * Pre-made audio for a book: make files for a range of chapters (or a length) with the current voice and
- * settings, follow their progress, and pick which one plays when reading.
+ * settings, follow their progress, and pick which one plays when reading. A file can be played while it's
+ * still being made (the parts finished so far), and "Continue later" stops making it, keeping what's done.
  */
 class RendersActivity : Activity() {
 
@@ -30,11 +39,20 @@ class RendersActivity : Activity() {
     private lateinit var th: ReaderTheme
     private val d by lazy { resources.displayMetrics.density }
     private fun dp(v: Int) = (v * d).toInt()
+    private fun dp(v: Float) = (v * d).toInt()
+    private val medium by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
     private val bookId by lazy { intent.getStringExtra(EXTRA_BOOK)!! }
     private val book by lazy { BookParser.load(BookStore.dir(this), bookId) }
     private lateinit var list: LinearLayout
+
+    /** What the list was built from: it's rebuilt when this changes, and only the progress moves in between. */
+    private var shown = ""
+    private val tickers = mutableListOf<() -> Unit>()
     private val refresh = object : Runnable {
-        override fun run() { render(); list.postDelayed(this, 1000) }
+        override fun run() {
+            if (signature() != shown) render() else tickers.forEach { it() }
+            list.postDelayed(this, 1000)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,9 +62,9 @@ class RendersActivity : Activity() {
         title = Themes.tint("Audio files", th.text)
         actionBar?.subtitle = Themes.tint(BookStore.prefs(this).getString("title_$bookId", bookId), th.dim)
         actionBar?.setDisplayHomeAsUpEnabled(true)
-        actionBar?.setHomeAsUpIndicator(getDrawable(R.drawable.ic_chevron_left)?.mutate()?.apply { setTint(th.text) })
+        actionBar?.setHomeAsUpIndicator(Icons.get(this, R.drawable.ic_chevron_left, th.text, 24f))
         RenderManager.markInterrupted(this, bookId)
-        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(10), dp(14), dp(28)) }
+        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(32)) }
         setContentView(ScrollView(this).apply { setBackgroundColor(th.bg); addView(list) })
         render()
     }
@@ -55,9 +73,8 @@ class RendersActivity : Activity() {
     override fun onPause() { super.onPause(); list.removeCallbacks(refresh) }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        val add = menu.add(0, 1, 0, "New audio file").setIcon(R.drawable.ic_add)
-        add.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-        add.icon?.mutate()?.setTint(th.text)
+        menu.add(0, 1, 0, "New audio file").setIcon(Icons.get(this, R.drawable.ic_add, th.text, 24f))
+            .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
         return true
     }
 
@@ -70,106 +87,235 @@ class RendersActivity : Activity() {
         return true
     }
 
+    // ---------- state ----------
+
+    private enum class Kind { MAKING, QUEUED, READY, PAUSED, STOPPED, FAILED }
+
+    private fun kindOf(r: Render) = when {
+        RenderManager.current?.render?.id == r.id -> Kind.MAKING
+        RenderManager.isWaiting(r.id) -> Kind.QUEUED
+        r.ready -> Kind.READY
+        r.status == "paused" -> Kind.PAUSED
+        r.status == "interrupted" || r.status == "processing" -> Kind.STOPPED
+        else -> Kind.FAILED
+    }
+
+    /** Making waits while the voice reads live (both use the same engine). */
+    private fun onHold() = Narrator.instance?.let { it.isPlaying && !it.isPreviewing && !it.isPlayingFile } == true
+
+    private fun signature() = Renders.list(this, bookId).joinToString(";") { "${it.id}:${kindOf(it)}:${it.parts.size}" } +
+        "|${Renders.activeId(this, bookId)}|${RenderManager.pausing}|${onHold()}|${Background.unrestricted(this)}"
+
     // ---------- list ----------
 
     private fun render() {
+        shown = signature()
+        tickers.clear()
         list.removeAllViews()
         list.addView(TextView(this).apply {
-            text = "Make audio ahead of time and it plays with no loading, no matter how warm the phone gets. " +
-                "Files use the voice and settings you have when you create them."
-            textSize = 13f; setTextColor(th.dim); setLineSpacing(0f, 1.2f); setPadding(dp(4), 0, dp(4), dp(10))
+            text = "Audio made ahead of time plays straight away, with no loading, and keeps the phone cool. " +
+                "Each file keeps the voice and settings it was made with."
+            textSize = 13f; setTextColor(th.dim); setLineSpacing(0f, 1.25f); setPadding(dp(4), dp(4), dp(4), dp(4))
         })
-        if (!Background.unrestricted(this)) list.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(th.highlight) }
-            addView(TextView(this@RendersActivity).apply {
-                text = "With the screen off, your phone makes audio about 3× slower while this app is battery-optimized. " +
-                    "Keep the app open for the fastest pre-load, or allow unrestricted battery use."
-                textSize = 13f; setTextColor(th.text); setLineSpacing(0f, 1.2f)
-            })
-            addView(TextView(this@RendersActivity).apply {
-                text = "Allow unrestricted battery use  ›"; textSize = 14f; setTextColor(th.accent); setPadding(0, dp(8), 0, 0)
-                setOnClickListener { Background.request(this@RendersActivity) }
-            })
-        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        if (!Background.unrestricted(this)) list.addView(batteryCard())
+
         val renders = Renders.list(this, bookId)
-        if (renders.isEmpty()) {
-            list.addView(button("+  New audio file") { newFile() })
-            return
-        }
+        if (renders.isEmpty()) { list.addView(emptyState()); return }
+
+        list.addView(header(if (renders.size == 1) "1 file" else "${renders.size} files"))
         val active = Renders.activeId(this, bookId)
         for (r in renders) list.addView(card(r, r.id == active))
-        list.addView(button("+  New audio file") { newFile() }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+        list.addView(pill("New audio file", R.drawable.ic_add, filled = false, wide = true) { newFile() },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
     }
 
-    private fun card(r: Render, active: Boolean) = LinearLayout(this).apply {
+    private fun header(text: String) = TextView(this).apply {
+        this.text = text.uppercase(); textSize = 12f; letterSpacing = 0.1f
+        setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD
+        setPadding(dp(4), dp(18), dp(4), dp(2))
+    }
+
+    private fun surface(stroke: Int? = null) = GradientDrawable().apply {
+        cornerRadius = dp(20).toFloat(); setColor(th.bar)
+        stroke?.let { setStroke(dp(1.5f), it) }
+    }
+
+    private fun batteryCard() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(14), dp(16), dp(12))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(16).toFloat(); setColor(th.bar)
-            if (active) setStroke(dp(2), th.accent)
-        }
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
-        addView(TextView(this@RendersActivity).apply { text = r.label; textSize = 16f; setTextColor(th.text); typeface = Typeface.DEFAULT_BOLD })
-        addView(TextView(this@RendersActivity).apply { text = r.describe(); textSize = 13f; setTextColor(th.dim) })
-
-        val p = RenderManager.current?.takeIf { it.render.id == r.id }
-        val waiting = RenderManager.isWaiting(r.id)
-        val pausing = p != null && RenderManager.pausing == r.id
-        val pct = "${(r.fraction * 100).toInt()}%"
-        // parts finished so far: playable while the rest is made (or after making stopped)
-        val canPlay = if (r.playable && !r.ready) "${RenderManager.formatDuration(r.durationMs)} ready to play" else null
-        val status = when {
-            p != null -> {
-                addView(ProgressBar(this@RendersActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
-                    max = 1000; progress = (p.fraction * 1000).toInt()
-                    progressTintList = ColorStateList.valueOf(th.accent)
-                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-                val paused = Narrator.instance?.let { it.isPlaying && !it.isPreviewing && !it.isPlayingFile } == true
-                "${(p.fraction * 100).toInt()}% · ${RenderManager.formatDuration(p.audioMs)} made" +
-                    when {
-                        pausing -> " · stopping at the end of this sentence"
-                        paused -> " · paused while you listen"
-                        else -> p.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: ""
-                    } +
-                    (if (canPlay != null) "\n$canPlay now · after that, reading continues live" else "")
-            }
-            waiting -> "Waiting for the current file to finish" + (canPlay?.let { "\n$it" } ?: "")
-            r.ready -> "${RenderManager.formatDuration(r.durationMs)} · ${Renders.sizeBytes(this@RendersActivity, r) / 1_048_576} MB" +
-                if (active) " · plays when you read these chapters" else ""
-            r.status == "paused" -> "Paused at $pct" + (canPlay?.let { " · $it" } ?: "")
-            r.status == "interrupted" -> "Stopped at $pct (the app was closed)" + (canPlay?.let { " · $it" } ?: "")
-            else -> if (canPlay != null) "Stopped at $pct by an error · $canPlay" else "Couldn't be made"
-        }
+        setPadding(dp(18), dp(16), dp(18), dp(14))
+        background = surface()
         addView(TextView(this@RendersActivity).apply {
-            text = status; textSize = 13f; setLineSpacing(0f, 1.2f)
-            setTextColor(if (r.playable || p != null) th.text else th.dim); setPadding(0, dp(6), 0, dp(4))
+            text = "Faster with the screen off"; textSize = 15f; setTextColor(th.text); typeface = medium; gravity = Gravity.CENTER_VERTICAL
+            Icons.leading(this, R.drawable.ic_bolt, th.accent, sizeDp = 20f, gapDp = 10f)
+        })
+        addView(TextView(this@RendersActivity).apply {
+            text = "While this app is battery-optimized, your phone makes audio about 3× slower with the screen off. " +
+                "Keep the app open, or allow unrestricted battery use."
+            textSize = 13f; setTextColor(th.dim); setLineSpacing(0f, 1.25f); setPadding(0, dp(6), 0, dp(12))
+        })
+        addView(pill("Allow unrestricted battery use", null, filled = false) { Background.request(this@RendersActivity) },
+            LinearLayout.LayoutParams(-2, -2))
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+    }
+
+    private fun emptyState() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(dp(24), dp(32), dp(24), dp(24))
+        background = surface()
+        addView(ImageView(this@RendersActivity).apply {
+            setImageDrawable(Icons.get(this@RendersActivity, R.drawable.ic_audio_file, th.accent, 36f))
+            scaleType = ImageView.ScaleType.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(tinted(0.16f)) }
+        }, LinearLayout.LayoutParams(dp(72), dp(72)))
+        addView(TextView(this@RendersActivity).apply {
+            text = "No audio files yet"; textSize = 18f; setTextColor(th.text); typeface = medium; gravity = Gravity.CENTER
+            setPadding(0, dp(16), 0, dp(6))
+        })
+        addView(TextView(this@RendersActivity).apply {
+            text = "Pick some chapters or a length, and the audio is made in the background. " +
+                "You can start listening after the first few minutes, while the rest is still being made."
+            textSize = 13.5f; setTextColor(th.dim); gravity = Gravity.CENTER; setLineSpacing(0f, 1.25f)
+        })
+        addView(pill("New audio file", R.drawable.ic_add, filled = true) { newFile() },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(20) })
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) }
+    }
+
+    private fun card(r: Render, active: Boolean): View {
+        val kind = kindOf(r)
+        val p = RenderManager.current?.takeIf { it.render.id == r.id }
+        val pausing = kind == Kind.MAKING && RenderManager.pausing == r.id
+        val hold = kind == Kind.MAKING && onHold()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(12))
+            background = surface(if (active) Themes.mix(th.bar, th.accent, 0.75f) else null)
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
+        }
+
+        // title row: status badge, name and voice, status pill
+        val badgeIcon = when (kind) {
+            Kind.MAKING -> R.drawable.ic_graphic_eq
+            Kind.QUEUED -> R.drawable.ic_hourglass
+            Kind.READY -> R.drawable.ic_audio_file
+            Kind.PAUSED, Kind.STOPPED -> R.drawable.ic_pause
+            Kind.FAILED -> R.drawable.ic_error
+        }
+        val strong = kind == Kind.MAKING || kind == Kind.READY
+        val pillText = when (kind) {
+            Kind.MAKING -> if (pausing) "Stopping" else if (hold) "On hold" else "Making"
+            Kind.QUEUED -> "Queued"
+            Kind.READY -> "Ready"
+            Kind.PAUSED -> "Paused"
+            Kind.STOPPED -> "Stopped"
+            Kind.FAILED -> "Failed"
+        }
+        box.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            addView(ImageView(this@RendersActivity).apply {
+                setImageDrawable(Icons.get(this@RendersActivity, badgeIcon, if (strong) th.accent else th.dim, 22f))
+                scaleType = ImageView.ScaleType.CENTER
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (strong) tinted(0.16f) else neutral(0.08f)) }
+            }, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(14) })
+            addView(LinearLayout(this@RendersActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(this@RendersActivity).apply {
+                    text = r.label; textSize = 16f; setTextColor(th.text); typeface = medium
+                    maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+                })
+                addView(TextView(this@RendersActivity).apply {
+                    text = if (kind == Kind.READY) "${RenderManager.formatDuration(r.durationMs)} · ${sizeMb(r)} · ${r.describe()}" else r.describe()
+                    textSize = 13f; setTextColor(th.dim); setPadding(0, dp(2), 0, 0)
+                    maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+                })
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(TextView(this@RendersActivity).apply {
+                text = pillText; textSize = 11.5f; typeface = medium; letterSpacing = 0.02f
+                setTextColor(if (strong) th.accent else th.dim)
+                setPadding(dp(10), dp(4), dp(10), dp(4))
+                background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(if (strong) tinted(0.16f) else neutral(0.08f)) }
+            }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         })
 
-        val actions = LinearLayout(this@RendersActivity).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(4), 0, 0) }
-        fun action(label: String, onClick: () -> Unit) = actions.addView(TextView(this@RendersActivity).apply {
-            text = label; textSize = 13f; setTextColor(th.accent); setPadding(0, dp(6), dp(18), dp(6))
-            setOnClickListener { onClick() }
-        })
-        when {
-            p != null || waiting -> {
-                if (r.playable) action("Play") { play(r) }
-                if (!pausing) action("Continue later") { RenderManager.pause(this@RendersActivity, r.id); render() }
-                action("Cancel") { RenderManager.cancel(this@RendersActivity, r.id); render() }
+        // progress: how much is made, and what's going on
+        if (kind != Kind.READY) {
+            val bar = progressBar(if (kind == Kind.MAKING && !pausing && !hold) th.accent else Themes.mix(th.bar, th.dim, 0.8f))
+            val line = TextView(this).apply { textSize = 13f; setTextColor(th.text); setLineSpacing(0f, 1.2f); setPadding(0, dp(8), 0, 0) }
+            fun update() {
+                val fraction = p?.fraction ?: r.fraction
+                val made = p?.audioMs ?: r.durationMs
+                bar.progress = (fraction * 1000).toInt()
+                val pct = "${(fraction * 100).toInt()}%"
+                line.text = when (kind) {
+                    Kind.MAKING -> "$pct · ${RenderManager.formatDuration(made)} made" + when {
+                        pausing -> " · stopping after this sentence"
+                        hold -> " · waits while you listen live"
+                        else -> p?.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: ""
+                    }
+                    Kind.QUEUED -> "$pct made · starts when the file being made now is done"
+                    Kind.PAUSED -> "$pct made · ${RenderManager.formatDuration(r.durationMs)} of audio"
+                    Kind.STOPPED -> "$pct made · stopped when the app was closed"
+                    else -> if (r.playable) "Stopped at $pct by an error · ${RenderManager.formatDuration(r.durationMs)} kept" else "Couldn't be made"
+                }
             }
-            r.ready -> {
-                if (active) action("Don't use for playback") { Renders.setActive(this@RendersActivity, bookId, null); render() }
-                else action("Use for playback") { Renders.setActive(this@RendersActivity, bookId, r.id); render() }
-                action("Delete") { confirmDelete(r) }
+            update()
+            if (kind == Kind.MAKING) tickers += ::update
+            box.addView(bar, LinearLayout.LayoutParams(-1, dp(6)).apply { topMargin = dp(14) })
+            box.addView(line)
+        }
+
+        // what you can do with it now
+        val note: Pair<Int, String>? = when {
+            kind == Kind.MAKING || kind == Kind.QUEUED ->
+                if (r.playable) R.drawable.ic_info to "You can play the ${RenderManager.formatDuration(r.durationMs)} made so far. " +
+                    "When it runs out, reading carries on live."
+                else R.drawable.ic_info to "You can start playing as soon as the first couple of minutes are made."
+            active && r.playable -> R.drawable.ic_headphones to
+                if (r.ready) "Plays when you read these chapters" else "Plays when you read the part that's made"
+            else -> null
+        }
+        note?.let { (icon, t) ->
+            box.addView(TextView(this).apply {
+                text = t; textSize = 12.5f; setLineSpacing(0f, 1.2f)
+                val c = if (icon == R.drawable.ic_headphones) th.accent else th.dim
+                setTextColor(c)
+                Icons.leading(this, icon, c, sizeDp = 16f, gapDp = 8f)
+                setPadding(0, dp(10), 0, 0)
+            })
+        }
+
+        // actions: main ones on the left, delete at the end
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        fun add(v: View) = actions.addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+        when (kind) {
+            Kind.MAKING, Kind.QUEUED -> {
+                if (r.playable) add(pill("Play", R.drawable.ic_play, filled = true) { play(r) })
+                if (!pausing) add(pill("Continue later", R.drawable.ic_pause, filled = !r.playable) {
+                    RenderManager.pause(this, r.id); render()
+                })
+            }
+            Kind.READY -> {
+                add(pill("Play", R.drawable.ic_play, filled = true) { play(r) })
+                if (active) add(pill("Stop using", null, filled = false) { Renders.setActive(this, bookId, null); render() })
+                else add(pill("Use when reading", R.drawable.ic_headphones, filled = false) { Renders.setActive(this, bookId, r.id); render() })
             }
             else -> {
-                if (r.playable) action("Play") { play(r) }
-                action(if (r.playable) "Continue making" else "Try again") { resume(r) }
-                action("Delete") { confirmDelete(r) }
+                if (r.playable) add(pill("Play", R.drawable.ic_play, filled = true) { play(r) })
+                add(pill(if (kind == Kind.FAILED && !r.playable) "Try again" else "Continue making",
+                    if (kind == Kind.FAILED) R.drawable.ic_refresh else R.drawable.ic_download, filled = !r.playable) { resume(r) })
             }
         }
-        addView(actions)
+        actions.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        actions.addView(iconButton(R.drawable.ic_delete, if (kind == Kind.MAKING || kind == Kind.QUEUED) "Stop and delete" else "Delete") {
+            confirmDelete(r, kind)
+        })
+        box.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+        return box
+    }
+
+    private fun sizeMb(r: Render): String {
+        val mb = Renders.sizeBytes(this, r) / 1_048_576.0
+        return if (mb < 10) "%.1f MB".format(java.util.Locale.US, mb) else "${mb.toInt()} MB"
     }
 
     /** Use [r] for playback and go back to the book, reading from where you are if the file covers it, else its start. */
@@ -180,11 +326,16 @@ class RendersActivity : Activity() {
         finish()
     }
 
-    private fun confirmDelete(r: Render) {
-        Themes.dialog(this).setTitle("Delete this audio file?")
-            .setMessage("${r.label} · ${r.describe()}")
-            .setPositiveButton("Delete") { _, _ -> Renders.delete(this, r); render() }
-            .setNegativeButton("Cancel", null).show()
+    private fun confirmDelete(r: Render, kind: Kind) {
+        val making = kind == Kind.MAKING || kind == Kind.QUEUED
+        val what = if (r.durationMs > 0) "The ${RenderManager.formatDuration(r.durationMs)} of audio in it will be deleted." else ""
+        Themes.dialog(this).setTitle(if (making) "Stop and delete this file?" else "Delete this audio file?")
+            .setMessage("${r.label} · ${r.describe()}" + if (what.isNotEmpty()) "\n\n$what" else "")
+            .setPositiveButton("Delete") { _, _ ->
+                if (making) RenderManager.cancel(this, r.id) else Renders.delete(this, r)
+                render()
+            }
+            .setNegativeButton("Keep", null).show()
     }
 
     /** Make it again from where it stopped, keeping the parts already made. */
@@ -194,11 +345,47 @@ class RendersActivity : Activity() {
         render()
     }
 
-    private fun button(label: String, onClick: () -> Unit) = TextView(this).apply {
-        text = label; textSize = 15f; gravity = Gravity.CENTER; setTextColor(th.onAccent)
-        setPadding(dp(16), dp(13), dp(16), dp(13))
-        background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(th.accent) }
+    // ---------- building blocks ----------
+
+    private fun tinted(t: Float) = Themes.mix(th.bar, th.accent, t)
+    private fun neutral(t: Float) = Themes.mix(th.bar, th.text, t)
+    private fun ripple(c: Int) = ColorStateList.valueOf((c and 0xFFFFFF) or 0x33000000)
+
+    private fun progressBar(color: Int) = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+        max = 1000
+        val radius = dp(3).toFloat()
+        val track = GradientDrawable().apply { cornerRadius = radius; setColor(neutral(0.12f)) }
+        val fill = ClipDrawable(GradientDrawable().apply { cornerRadius = radius; setColor(color) }, Gravity.START, ClipDrawable.HORIZONTAL)
+        progressDrawable = LayerDrawable(arrayOf<Drawable>(track, fill)).apply {
+            setId(0, android.R.id.background); setId(1, android.R.id.progress)
+        }
+    }
+
+    /**
+     * Pill button: filled (the main action) or outlined, with an optional leading icon. A [wide] one fills its row,
+     * with the icon inline so it stays centered with the text.
+     */
+    private fun pill(text: String, icon: Int?, filled: Boolean, wide: Boolean = false, onClick: () -> Unit) = TextView(this).apply {
+        textSize = 14f; typeface = medium; gravity = Gravity.CENTER; maxLines = 1
+        val fg = if (filled) th.onAccent else th.accent
+        setTextColor(fg)
+        minHeight = dp(40)
+        setPadding(dp(if (icon != null && !wide) 14 else 18), dp(8), dp(18), dp(8))
+        this.text = if (icon != null && wide) Icons.inline(context, icon, fg, text) else text
+        if (icon != null && !wide) Icons.leading(this, icon, fg, sizeDp = 18f, gapDp = 6f)
+        background = RippleDrawable(ripple(if (filled) th.onAccent else th.accent),
+            GradientDrawable().apply { cornerRadius = dp(20).toFloat(); if (filled) setColor(th.accent) else setStroke(dp(1), th.accent) }, null)
         setOnClickListener { onClick() }
+    }
+
+    private fun iconButton(icon: Int, description: String, onClick: () -> Unit) = ImageButton(this).apply {
+        setImageDrawable(Icons.get(this@RendersActivity, icon, th.dim, 22f))
+        scaleType = ImageView.ScaleType.CENTER
+        background = RippleDrawable(ripple(th.text), null, GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(-1) })
+        contentDescription = description
+        tooltipText = description
+        setOnClickListener { onClick() }
+        layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
     }
 
     // ---------- new file ----------
@@ -231,53 +418,68 @@ class RendersActivity : Activity() {
             while (to < bookText.length && msFor(to - from) < wantMs) to = (bookText.indexOf("\n\n", to + 1).takeIf { it > 0 } ?: bookText.length)
             return from to minOf(bookText.length, to)
         }
+        fun chapterName(i: Int) = "${i + 1}. ${chapters[i].title}"
 
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(6), dp(22), 0) }
-        val fromRow = pickerRow("From")
-        val toRow = pickerRow("To")
-        val estimate = TextView(this).apply { textSize = 13f; setTextColor(th.text); setPadding(0, dp(12), 0, dp(4)) }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0) }
+        val fromRow = pickerRow("Start at")
+        val toRow = pickerRow("Until the end of")
+        val audioLine = infoLine(R.drawable.ic_timer, th.text)
+        val makeLine = infoLine(R.drawable.ic_hourglass, th.dim)
         val lengthChips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
 
         fun update() {
             if (toIdx < fromIdx) toIdx = fromIdx
-            (fromRow.getChildAt(1) as TextView).text = "${fromIdx + 1}. ${chapters[fromIdx].title}  ›"
-            (toRow.getChildAt(1) as TextView).text = if (lengthMin > 0) "about ${RenderManager.formatDuration(lengthMin * 60_000L)}  ›"
-                else "${toIdx + 1}. ${chapters[toIdx].title}  ›"
+            fromRow.value.text = chapterName(fromIdx)
+            toRow.label.text = if (lengthMin > 0) "Length" else "Until the end of"
+            toRow.value.text = if (lengthMin > 0) "About ${RenderManager.formatDuration(lengthMin * 60_000L)}" else chapterName(toIdx)
             val (from, to) = range()
             val audio = msFor(to - from)
             val rtf = Narrator.instance?.currentRtf ?: 0.7
-            estimate.text = "≈ ${RenderManager.formatDuration(audio)} of audio · about ${RenderManager.formatDuration((audio * rtf).toLong())} to make on this phone" +
-                "\n≈ ${audio / 60_000 / 2 + 1} MB"
+            audioLine.text = "About ${RenderManager.formatDuration(audio)} of audio · ${audio / 60_000 / 2 + 1} MB"
+            makeLine.text = "Takes about ${RenderManager.formatDuration((audio * rtf).toLong())} to make on this phone"
             for (i in 0 until lengthChips.childCount) (lengthChips.getChildAt(i) as TextView).let { c ->
                 val on = c.tag == lengthMin
                 c.setTextColor(if (on) th.onAccent else th.text)
-                c.background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); if (on) setColor(th.accent) else setStroke(dp(1), th.dim) }
+                c.typeface = if (on) medium else Typeface.DEFAULT
+                c.background = RippleDrawable(ripple(th.accent), GradientDrawable().apply {
+                    cornerRadius = dp(18).toFloat()
+                    if (on) setColor(th.accent) else setStroke(dp(1), Themes.mix(th.bar, th.dim, 0.7f))
+                }, null)
             }
         }
-        fromRow.setOnClickListener {
-            Themes.dialog(this).setTitle("From chapter")
-                .setSingleChoiceItems(chapters.mapIndexed { i, c -> "${i + 1}. ${c.title}" }.toTypedArray(), fromIdx) { dd, i -> fromIdx = i; dd.dismiss(); update() }
+        fromRow.view.setOnClickListener {
+            Themes.dialog(this).setTitle("Start at chapter")
+                .setSingleChoiceItems(chapters.indices.map(::chapterName).toTypedArray(), fromIdx) { dd, i -> fromIdx = i; dd.dismiss(); update() }
                 .setNegativeButton("Close", null).show()
         }
-        toRow.setOnClickListener {
+        toRow.view.setOnClickListener {
             lengthMin = 0
-            Themes.dialog(this).setTitle("Until the end of chapter")
-                .setSingleChoiceItems(chapters.mapIndexed { i, c -> "${i + 1}. ${c.title}" }.drop(fromIdx).toTypedArray(), toIdx - fromIdx) { dd, i -> toIdx = fromIdx + i; dd.dismiss(); update() }
-                .setNegativeButton("Close", null).show()
             update()
+            Themes.dialog(this).setTitle("Until the end of chapter")
+                .setSingleChoiceItems(chapters.indices.drop(fromIdx).map(::chapterName).toTypedArray(), toIdx - fromIdx) { dd, i -> toIdx = fromIdx + i; dd.dismiss(); update() }
+                .setNegativeButton("Close", null).show()
         }
         for ((label, min) in listOf("Chapters" to 0, "30 min" to 30, "1 h" to 60, "2 h" to 120, "4 h" to 240)) lengthChips.addView(TextView(this).apply {
-            text = label; tag = min; textSize = 12f; gravity = Gravity.CENTER; setPadding(dp(8), dp(6), dp(8), dp(6))
+            text = label; tag = min; textSize = 12.5f; gravity = Gravity.CENTER; maxLines = 1
+            setPadding(dp(4), dp(8), dp(4), dp(8))
             setOnClickListener { lengthMin = min; update() }
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(5) })
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = if (min == 240) 0 else dp(6) })
 
-        box.addView(fromRow); box.addView(toRow)
-        box.addView(TextView(this).apply { text = "Or a length:"; textSize = 12f; setTextColor(th.dim); setPadding(0, dp(8), 0, dp(6)) })
-        box.addView(lengthChips)
-        box.addView(estimate)
+        box.addView(fromRow.view)
+        box.addView(toRow.view, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         box.addView(TextView(this).apply {
-            text = "Voice: ${voice.name} · ${preset.describe()}\nTo use other settings, change them in Settings first."
-            textSize = 12f; setTextColor(th.dim); setLineSpacing(0f, 1.2f); setPadding(0, dp(8), 0, 0)
+            text = "Or make a set length"; textSize = 12.5f; setTextColor(th.dim); setPadding(dp(2), dp(14), 0, dp(8))
+        })
+        box.addView(lengthChips)
+        box.addView(View(this).apply { setBackgroundColor(neutral(0.12f)) },
+            LinearLayout.LayoutParams(-1, maxOf(1, dp(1) / 2)).apply { topMargin = dp(16); bottomMargin = dp(6) })
+        box.addView(audioLine)
+        box.addView(makeLine)
+        box.addView(infoLine(R.drawable.ic_play, th.dim).apply {
+            text = "You can start listening after the first couple of minutes, while the rest is made."
+        })
+        box.addView(infoLine(R.drawable.ic_voice, th.dim).apply {
+            text = "${voice.name} · ${preset.describe()}. To use other settings, change them in Settings first."
         })
         update()
 
@@ -297,11 +499,35 @@ class RendersActivity : Activity() {
             .setNegativeButton("Cancel", null).show()
     }
 
-    private fun pickerRow(label: String) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, dp(10), 0, dp(10))
-        addView(TextView(this@RendersActivity).apply { text = label; textSize = 14f; setTextColor(th.dim); minWidth = dp(56) })
-        addView(TextView(this@RendersActivity).apply { textSize = 15f; setTextColor(th.accent); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END },
-            LinearLayout.LayoutParams(0, -2, 1f))
+    private class Picker(val view: View, val label: TextView, val value: TextView)
+
+    /** A tappable field in the new-file dialog: small label, the current choice, and a chevron. */
+    private fun pickerRow(label: String): Picker {
+        val labelView = TextView(this).apply { text = label; textSize = 12f; setTextColor(th.dim) }
+        val valueView = TextView(this).apply {
+            textSize = 15f; setTextColor(th.text); maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setPadding(0, dp(2), 0, 0)
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(56)
+            setPadding(dp(14), dp(8), dp(8), dp(8))
+            background = RippleDrawable(ripple(th.accent), GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(neutral(0.07f)) }, null)
+            addView(LinearLayout(this@RendersActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(labelView); addView(valueView)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(FrameLayout(this@RendersActivity).apply {
+                addView(ImageView(this@RendersActivity).apply {
+                    setImageDrawable(Icons.get(this@RendersActivity, R.drawable.ic_expand_more, th.dim, 22f))
+                })
+            }, LinearLayout.LayoutParams(dp(22), dp(22)))
+        }
+        return Picker(row, labelView, valueView)
+    }
+
+    private fun infoLine(icon: Int, color: Int) = TextView(this).apply {
+        textSize = 13f; setTextColor(color); setLineSpacing(0f, 1.2f); gravity = Gravity.CENTER_VERTICAL
+        Icons.leading(this, icon, if (color == th.text) th.accent else th.dim, sizeDp = 18f, gapDp = 10f)
+        setPadding(0, dp(8), 0, 0)
     }
 }
