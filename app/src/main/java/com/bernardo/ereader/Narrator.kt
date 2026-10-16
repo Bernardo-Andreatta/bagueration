@@ -989,3 +989,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         }
     }
 }
+            var shown = -1 to -1   // sentence highlighted now
+                        // a clause after a comma continues the sentence already highlighted (same end, later start):
+                        // keep the whole sentence lit instead of shrinking it clause by clause
+                        if (b == shown.second && a > shown.first) return
+                        shown = a to b
