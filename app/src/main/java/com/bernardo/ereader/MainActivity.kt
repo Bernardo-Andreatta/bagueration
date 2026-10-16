@@ -1247,49 +1247,59 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         if (start !in pages[page] until pageEnd(page)) showPage(pageOf(start))
         highlightSpoken()
-        scrollToSpoken(start, end)
+        startFollowing()
     }
 
-    /**
-     * Keep the whole sentence being read on screen, not just its first line: a long sentence that starts low on the
-     * page used to be read off the bottom. Scrolls when any of it is hidden, or when it starts in the bottom quarter.
-     */
-    private fun scrollToSpoken(start: Int, end: Int) {
-        pageView.post {
-            val layout = pageView.layout ?: return@post
-            val a = (start - pages[page]).coerceIn(0, pageView.text.length)
-            val b = (end - pages[page] - 1).coerceIn(a, pageView.text.length)
-            val top = layout.getLineTop(layout.getLineForOffset(a)) + pageView.paddingTop
-            val bottom = layout.getLineBottom(layout.getLineForOffset(b)) + pageView.paddingTop
-            // only the part not under the top bar or the player counts as visible
-            val win = visibleWindow()
-            val vh = win.last - win.first
-            if (top < win.first || bottom > win.last || top > win.first + vh * 0.75) {
-                // a sentence taller than the visible part starts at its top; otherwise a quarter of the way down
-                val lead = if (bottom - top > vh * 0.7) 0 else vh / 4
-                lastAutoScroll = android.os.SystemClock.uptimeMillis()
-                scroll.smoothScrollTo(0, (top - coverTop() - lead).coerceAtLeast(0))
+    // ---------- following the voice: a slow, steady creep that keeps the spoken line near the middle ----------
+
+    private var following = false
+    private var lastFollowFrame = 0L
+
+    /** Scroll position (px) that would put the line being heard a bit above the middle of the visible part. */
+    private fun followTarget(): Int? {
+        val layout = pageView.layout ?: return null
+        val at = if (word.first >= spoken.first && word.first < spoken.second) word.first else spoken.first
+        if (at < 0 || at !in pages[page] until pageEnd(page)) return null
+        val line = layout.getLineForOffset((at - pages[page]).coerceIn(0, pageView.text.length))
+        val y = (layout.getLineTop(line) + layout.getLineBottom(line)) / 2 + pageView.paddingTop
+        val vh = scroll.height - coverTop() - coverBottom()
+        val max = ((scroll.getChildAt(0)?.height ?: 0) - scroll.height).coerceAtLeast(0)
+        return (y - coverTop() - (vh * 0.42f).toInt()).coerceIn(0, max)
+    }
+
+    private val followFrame = object : Runnable {
+        override fun run() {
+            if (!following) return
+            if (!narrator.isPlaying || !follow || !visible || pages.isEmpty()) { following = false; return }
+            val target = followTarget()
+            val now = android.os.SystemClock.uptimeMillis()
+            val dt = (now - lastFollowFrame).coerceIn(8, 50)
+            lastFollowFrame = now
+            if (target != null) {
+                val d = resources.displayMetrics.density
+                val diff = target - scroll.scrollY
+                val vh = scroll.height - coverTop() - coverBottom()
+                when {
+                    // far away (a jump, a new chapter): one smooth scroll instead of a long creep
+                    abs(diff) > vh * 1.2 -> scroll.smoothScrollTo(0, target)
+                    // close enough: hold still, so the page doesn't twitch
+                    abs(diff) > 12 * d -> {
+                        // at most ~90 dp per second, a little faster the further behind it is
+                        val speed = (28f + abs(diff) / d * 0.35f).coerceAtMost(90f) * d / 1000f
+                        val step = (speed * dt).coerceAtLeast(0.5f)
+                        scroll.scrollTo(0, scroll.scrollY + (if (diff > 0) minOf(step, diff.toFloat()) else maxOf(-step, diff.toFloat())).toInt())
+                    }
+                }
             }
+            scroll.postOnAnimation(this)
         }
     }
 
-    private var lastAutoScroll = 0L
-
-    /** Inside a sentence taller than the screen: bring the word being heard back into view. */
-    private fun scrollToWord(start: Int) {
-        // not while the sentence scroll is still animating (the view would be measured mid-way and scrolled again)
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastAutoScroll < 600) return
-        val layout = pageView.layout ?: return
-        val a = (start - pages[page]).coerceIn(0, pageView.text.length)
-        val line = layout.getLineForOffset(a)
-        val top = layout.getLineTop(line) + pageView.paddingTop
-        val bottom = layout.getLineBottom(line) + pageView.paddingTop
-        val win = visibleWindow()
-        if (bottom > win.last || top < win.first) {
-            lastAutoScroll = now
-            scroll.smoothScrollTo(0, (top - coverTop() - (win.last - win.first) / 3).coerceAtLeast(0))
-        }
+    private fun startFollowing() {
+        if (following) return
+        following = true
+        lastFollowFrame = android.os.SystemClock.uptimeMillis()
+        scroll.postOnAnimation(followFrame)
     }
 
     private fun highlightSpoken() {
@@ -1306,8 +1316,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     override fun onWord(start: Int, end: Int) {
         word = start to end
         applyWordMark()
-        if (follow && visible && narrator.isPlaying && pages.isNotEmpty() && start in pages[page] until pageEnd(page) &&
-            start >= spoken.first && start < spoken.second) scrollToWord(start)
+        if (follow && visible && narrator.isPlaying && pages.isNotEmpty()) startFollowing()
     }
 
     /** The word being heard gets a stronger mark inside the sentence's, while following the voice on this page. */
@@ -1352,6 +1361,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (pageOf(spoken.first) != page) showPage(pageOf(spoken.first))
         highlightSpoken()
         scrollToOffset(spoken.first)
+        startFollowing()
         updateJumpBack()
     }
 
