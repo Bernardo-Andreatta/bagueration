@@ -92,7 +92,7 @@ object Renders {
 
     // ---------- which file the reader plays ----------
 
-    /** [activeId] value for "read live, don't play prepared audio in this book". */
+    /** [activeId] value for "read live, don't play pre-loaded audio in this book". */
     const val LIVE = "live"
 
     /** The file preferred where several cover the same text (the last one played), or [LIVE]. */

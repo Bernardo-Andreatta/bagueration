@@ -109,7 +109,7 @@
                     android:layout_marginStart="8dp"
                     android:gravity="center_vertical"
                     android:maxLines="1"
-                    android:text="Prepare"
+                    android:text="Pre-load"
                     android:textSize="13sp" />
 
                 <TextView

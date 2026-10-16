@@ -13,10 +13,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 
 /**
- * Prepared audio for a book: chapters (or a length) made ahead of time with the current voice and settings, so
- * they play with no loading. Shows what plays on the page you came from, the progress of what's being prepared,
+ * Pre-loaded audio for a book: chapters (or a length) made ahead of time with the current voice and settings, so
+ * they play with no loading. Shows what plays on the page you came from, the progress of what's being pre-loaded,
  * and one obvious next step per file; secondary actions sit in each file's "More" sheet. A file can be played
- * while it's still being prepared (the parts finished so far), and "Pause" stops preparing it, keeping what's done.
+ * while it's still being pre-loaded (the parts finished so far), and "Pause" stops preparing it, keeping what's done.
  */
 class RendersActivity : Activity() {
 
@@ -26,7 +26,7 @@ class RendersActivity : Activity() {
         const val EXTRA_CHAPTER = "chapter"
         /** Where the reader is (book offset): the screen says what plays there. */
         const val EXTRA_POS = "pos"
-        /** Open straight into "Prepare chapters" (the first-time path from the reader). */
+        /** Open straight into "Pre-load chapters" (the first-time path from the reader). */
         const val EXTRA_NEW = "new"
         /** "Play" was pressed on a file: the reader starts (book id, position) when it comes back. */
         var playRequest: Pair<String, Int>? = null
@@ -61,11 +61,11 @@ class RendersActivity : Activity() {
         ui = Ui(this, th)
         Themes.applyChrome(this, th)
         Ui.edgeToEdge(this)
-        val bar = ui.topBar("Prepared audio", BookStore.prefs(this).getString("title_$bookId", bookId),
+        val bar = ui.topBar("Pre-loaded audio", BookStore.prefs(this).getString("title_$bookId", bookId),
             nav = Ui.Action(R.drawable.ic_chevron_left, "Back") { finish() },
             actions = listOf(
-                Ui.Action(R.drawable.ic_info, "About prepared audio") { showHelp() },
-                Ui.Action(R.drawable.ic_add, "Prepare chapters") { newFile() },
+                Ui.Action(R.drawable.ic_info, "About pre-loaded audio") { showHelp() },
+                Ui.Action(R.drawable.ic_add, "Pre-load chapters") { newFile() },
             ))
         RenderManager.markInterrupted(this, bookId)
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(4), dp(16), dp(32)) }
@@ -100,7 +100,7 @@ class RendersActivity : Activity() {
         else -> Kind.FAILED
     }
 
-    /** Preparing waits while the voice reads live (both use the same engine). */
+    /** Pre-loading waits while the voice reads live (both use the same engine). */
     private fun onHold() = Narrator.instance?.let { it.isPlaying && !it.isPreviewing && !it.isPlayingFile } == true
 
     private fun signature() = Renders.list(this, bookId).joinToString(";") { "${it.id}:${kindOf(it)}:${it.parts.size}" } +
@@ -133,19 +133,19 @@ class RendersActivity : Activity() {
         val live = Renders.activeId(this, bookId) == Renders.LIVE
         val used = usedAt(herePos)
         when {
-            live -> list.addView(noteCard("Prepared audio is off in this book: it reads live.", "Turn it on", R.drawable.ic_headphones) {
+            live -> list.addView(noteCard("Pre-loaded audio is off in this book: it reads live.", "Turn it on", R.drawable.ic_headphones) {
                 Renders.setActive(this, bookId, null); render()
             })
             used == null -> list.addView(noteCard(
-                if (here.isEmpty()) "This chapter reads live." else "Reads live until the audio for this page is prepared.",
-                if (here.isEmpty()) "Prepare this chapter" else null, R.drawable.ic_add) { newFile() })
+                if (here.isEmpty()) "This chapter reads live." else "Reads live until the audio for this page is pre-loaded.",
+                if (here.isEmpty()) "Pre-load this chapter" else null, R.drawable.ic_add) { newFile() })
         }
         for (r in here) list.addView(card(r, playsHere = r.id == used?.id))
         if (rest.isNotEmpty()) {
             list.addView(header("Other chapters", null))
             for (r in rest) list.addView(card(r, playsHere = false))
         }
-        list.addView(ui.pill("Prepare more chapters", R.drawable.ic_add, filled = false, wide = true) { newFile() },
+        list.addView(ui.pill("Pre-load more chapters", R.drawable.ic_add, filled = false, wide = true) { newFile() },
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(20) })
     }
 
@@ -168,7 +168,7 @@ class RendersActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
     }
 
-    /** Shown only while something is being prepared and the phone would slow it down with the screen off. */
+    /** Shown only while something is being pre-loaded and the phone would slow it down with the screen off. */
     private fun batteryRow() = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(16), dp(8), dp(10), dp(8))
@@ -180,15 +180,15 @@ class RendersActivity : Activity() {
             Icons.leading(this, R.drawable.ic_bolt, th.accent, sizeDp = 18f, gapDp = 10f)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         addView(ui.pill("Fix", null, filled = false) { Background.request(this@RendersActivity) }.apply {
-            contentDescription = "Allow unrestricted battery use, so preparing stays fast with the screen off"
+            contentDescription = "Allow unrestricted battery use, so pre-loading stays fast with the screen off"
         }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }
     }
 
     private fun emptyState() = ui.emptyState(R.drawable.ic_headphones, "Listen without waiting",
-        "Prepare a few chapters ahead of time: they play straight away, with no loading, and keep the phone cool. " +
+        "Pre-load a few chapters ahead of time: they play straight away, with no loading, and keep the phone cool. " +
             "You can start listening after a couple of minutes.",
-        "Prepare chapters") { newFile() }
+        "Pre-load chapters") { newFile() }
 
     private fun card(r: Render, playsHere: Boolean): View {
         val kind = kindOf(r)
@@ -214,7 +214,7 @@ class RendersActivity : Activity() {
         }
         val strong = kind == Kind.MAKING || kind == Kind.READY
         val status = when (kind) {
-            Kind.MAKING -> if (pausing) "Pausing" else if (hold) "On hold" else "Preparing"
+            Kind.MAKING -> if (pausing) "Pausing" else if (hold) "On hold" else "Pre-loading"
             Kind.QUEUED -> "Waiting"
             Kind.READY -> "Ready"
             Kind.PAUSED, Kind.STOPPED -> "Paused"
@@ -249,7 +249,7 @@ class RendersActivity : Activity() {
             }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
         })
 
-        // progress: how much is prepared, and what's going on
+        // progress: how much is pre-loaded, and what's going on
         if (kind != Kind.READY) {
             val bar = ui.progressBar(if (kind == Kind.MAKING && !pausing && !hold) th.accent else Themes.mix(th.surface, th.dim, 0.8f))
             val line = TextView(this).apply { textSize = 13f; setTextColor(th.text); setLineSpacing(0f, 1.2f); setPadding(0, dp(8), dp(10), 0) }
@@ -265,10 +265,10 @@ class RendersActivity : Activity() {
                         hold -> " · waits while you listen live"
                         else -> p?.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: ""
                     }
-                    Kind.QUEUED -> "Starts when the one before it is done" + if (fraction > 0) " · $pct prepared" else ""
-                    Kind.PAUSED -> "$pct prepared$ready"
-                    Kind.STOPPED -> "$pct prepared · paused when the app was closed"
-                    else -> if (r.playable) "Stopped at $pct by an error$ready" else "Couldn't be prepared"
+                    Kind.QUEUED -> "Starts when the one before it is done" + if (fraction > 0) " · $pct pre-loaded" else ""
+                    Kind.PAUSED -> "$pct pre-loaded$ready"
+                    Kind.STOPPED -> "$pct pre-loaded · paused when the app was closed"
+                    else -> if (r.playable) "Stopped at $pct by an error$ready" else "Couldn't be pre-loaded"
                 }
                 box.contentDescription = "${r.label}, $status, ${line.text}"
             }
@@ -282,8 +282,8 @@ class RendersActivity : Activity() {
         val note = when {
             playsHere -> "Plays on the page you're on"
             inUse && r.ready -> "Plays when you read these chapters"
-            inUse -> "Plays when you read the part prepared so far"
-            r.playable -> "Another prepared audio covers these chapters"
+            inUse -> "Plays when you read the part pre-loaded so far"
+            r.playable -> "Another pre-loaded audio covers these chapters"
             else -> null
         }
         note?.let { t ->
@@ -304,12 +304,12 @@ class RendersActivity : Activity() {
             Kind.MAKING, Kind.QUEUED -> {
                 if (r.playable) add(playPill(true))
                 if (!pausing) add(ui.pill("Pause", R.drawable.ic_pause, filled = false) { RenderManager.pause(this, r.id); render() }
-                    .apply { contentDescription = "Pause preparing, keep what's done" })
+                    .apply { contentDescription = "Pause pre-loading, keep what's done" })
             }
             Kind.READY -> add(playPill(true))
             Kind.PAUSED, Kind.STOPPED -> {
                 add(ui.pill("Resume", R.drawable.ic_download, filled = true) { resume(r) }
-                    .apply { contentDescription = "Resume preparing" })
+                    .apply { contentDescription = "Resume pre-loading" })
                 if (r.playable) add(playPill(false))
             }
             Kind.FAILED -> {
@@ -363,8 +363,8 @@ class RendersActivity : Activity() {
     }
 
     private fun confirmDelete(r: Render, making: Boolean) {
-        val what = if (r.durationMs > 0) "The ${RenderManager.formatDuration(r.durationMs)} prepared so far will be deleted." else ""
-        Themes.dialog(this).setTitle(if (making) "Stop preparing and delete?" else "Delete this prepared audio?")
+        val what = if (r.durationMs > 0) "The ${RenderManager.formatDuration(r.durationMs)} pre-loaded so far will be deleted." else ""
+        Themes.dialog(this).setTitle(if (making) "Stop pre-loading and delete?" else "Delete this pre-loaded audio?")
             .setMessage("${r.label} · ${r.describe()}" + if (what.isNotEmpty()) "\n\n$what" else "")
             .setPositiveButton("Delete") { _, _ ->
                 if (making) RenderManager.cancel(this, r.id) else Renders.delete(this, r)
@@ -382,16 +382,16 @@ class RendersActivity : Activity() {
 
     private fun showHelp() {
         val restricted = !Background.unrestricted(this)
-        ui.sheet("About prepared audio") {
+        ui.sheet("About pre-loaded audio") {
             fun para(t: String) = addView(ui.hint(t).apply { textSize = 14f; setTextColor(th.text); setPadding(dp(12), dp(4), dp(12), dp(8)) })
-            para("Prepared audio is made once, ahead of time, with the voice and settings you have now. It plays straight " +
+            para("Pre-loaded audio is made once, ahead of time, with the voice and settings you have now. It plays straight " +
                 "away, with no loading, and keeps the phone cool on long listens.")
-            para("You can start listening after the first couple of minutes, while the rest is prepared. Where it ends, " +
+            para("You can start listening after the first couple of minutes, while the rest is pre-loaded. Where it ends, " +
                 "reading carries on live.")
-            para("When you read a chapter, its prepared audio plays. If two cover the same chapters, the one you played last is used.")
-            para("Preparing waits while you listen live: both use the same voice engine.")
+            para("When you read a chapter, its pre-loaded audio plays. If two cover the same chapters, the one you played last is used.")
+            para("Pre-loading waits while you listen live: both use the same voice engine.")
             if (restricted) {
-                para("Your phone slows this app down about 3× with the screen off. Allowing unrestricted battery use keeps preparing fast.")
+                para("Your phone slows this app down about 3× with the screen off. Allowing unrestricted battery use keeps pre-loading fast.")
                 addView(ui.pill("Allow unrestricted battery use", R.drawable.ic_bolt, filled = false) { Background.request(this@RendersActivity) },
                     LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12); topMargin = dp(4) })
             }
@@ -408,8 +408,8 @@ class RendersActivity : Activity() {
     }
 
     /**
-     * The "Prepare chapters" sheet: the book's chapters as a checklist (the one on screen preselected) with each
-     * chapter's length and what's already prepared; tapping the first and last picks a range. Or a set length from a
+     * The "Pre-load chapters" sheet: the book's chapters as a checklist (the one on screen preselected) with each
+     * chapter's length and what's already pre-loaded; tapping the first and last picks a range. Or a set length from a
      * starting chapter. The audio length, file size and time to prepare follow every change.
      */
     private fun newFile() {
@@ -439,7 +439,7 @@ class RendersActivity : Activity() {
             val t = chapters[i].title.trim()
             return if (t.length <= 24) t else Regex("^\\S+(?:\\s+\\S+)?").find(t)?.value ?: "Chapter ${i + 1}"
         }
-        /** What's already prepared for a chapter: "ready" (all of it plays), "some" (part, or being prepared). */
+        /** What's already pre-loaded for a chapter: "ready" (all of it plays), "some" (part, or being pre-loaded). */
         fun preparedState(i: Int): String? {
             val s = chapters[i].start; val e = chapterEnd(i)
             if (existing.any { it.playable && it.fromChar <= s && it.coveredTo >= e }) return "ready"
@@ -470,7 +470,7 @@ class RendersActivity : Activity() {
                 checks[i].background = if (on) ui.rounded(th.accent, 6) else ui.rounded(null, 6, th.dim, 1.5f)
                 rowViews[i].isSelected = on
                 rowViews[i].contentDescription = "${chapterName(i)}, about ${RenderManager.formatDuration(msFor(chapterEnd(i) - chapters[i].start))}" +
-                    (when (prepared[i]) { "ready" -> ", already prepared"; "some" -> ", partly prepared"; else -> "" }) +
+                    (when (prepared[i]) { "ready" -> ", already pre-loaded"; "some" -> ", partly pre-loaded"; else -> "" }) +
                     if (on) ", selected" else ""
             }
             lengthChips.visibility = if (byLength) View.VISIBLE else View.GONE
@@ -491,7 +491,7 @@ class RendersActivity : Activity() {
             summary.text = if (byLength) "About ${RenderManager.formatDuration(audio)}, from ${chapterName(fromIdx)}"
                 else "${if (n == 1) "1 chapter" else "$n chapters"} · about ${RenderManager.formatDuration(audio)}"
             val dup = existing.any { it.voiceId == voice.id && it.settings == settings && it.fromChar <= from && it.toChar >= to }
-            details.text = (if (dup) "Already prepared with this voice: this makes another copy.\n" else "") +
+            details.text = (if (dup) "Already pre-loaded with this voice: this makes another copy.\n" else "") +
                 "${audio / 60_000 / 2 + 1} MB · takes about ${RenderManager.formatDuration((audio * rtf).toLong())} on this phone; " +
                 "you can listen after a couple of minutes.\n${voice.name} · ${preset.describe()} (change in Settings)"
         }
@@ -576,7 +576,7 @@ class RendersActivity : Activity() {
                 fromIdx == toIdx -> chapterShort(fromIdx)
                 else -> "${chapterShort(fromIdx)} – ${chapterShort(toIdx)}"
             }
-            // preparing something new turns prepared audio back on in a book set to read live
+            // preparing something new turns pre-loaded audio back on in a book set to read live
             if (Renders.activeId(this, bookId) == Renders.LIVE) Renders.setActive(this, bookId, null)
             val r = Render("r" + System.currentTimeMillis(), bookId, from, to, label, voice.id, settings, "processing", 0, System.currentTimeMillis())
             RenderManager.enqueue(this, r, bookText, specFrom(voice.id, settings))
@@ -597,10 +597,10 @@ class RendersActivity : Activity() {
             addView(LinearLayout(this@RendersActivity).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END or Gravity.CENTER_VERTICAL
                 addView(ui.pill("Cancel", null, filled = false) { sheet.dismiss() }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
-                addView(ui.pill("Prepare", R.drawable.ic_download, filled = true) { make() })
+                addView(ui.pill("Pre-load", R.drawable.ic_download, filled = true) { make() })
             }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
         })
-        sheet = ui.sheet("Prepare chapters", scroll = false, tall = tall) {
+        sheet = ui.sheet("Pre-load chapters", scroll = false, tall = tall) {
             addView(body, if (tall) LinearLayout.LayoutParams(-1, 0, 1f) else LinearLayout.LayoutParams(-1, -2))
         }
         update()

@@ -332,7 +332,7 @@ class LibraryActivity : Activity() {
         })
         val audio = Renders.list(this@LibraryActivity, b.id).any { it.ready }
         contentDescription = listOfNotNull(b.title, b.author, if (b.progress > 0) "${b.progress} percent read" else "not started",
-            if (reading) "reading now" else null, if (audio) "has prepared audio" else null).joinToString(", ")
+            if (reading) "reading now" else null, if (audio) "has pre-loaded audio" else null).joinToString(", ")
         setOnClickListener { open(b.id) }
         setOnLongClickListener { bookOptions(b); true }
     }
@@ -406,7 +406,7 @@ class LibraryActivity : Activity() {
         ui.menuSheet(null, listOf(
             Ui.Action(R.drawable.ic_library, "Open") { open(b.id) },
             Ui.Action(R.drawable.ic_play, "Resume reading aloud") { open(b.id, play = true) },
-            Ui.Action(R.drawable.ic_headphones, "Prepared audio") {
+            Ui.Action(R.drawable.ic_headphones, "Pre-loaded audio") {
                 startActivity(Intent(this, RendersActivity::class.java).putExtra(RendersActivity.EXTRA_BOOK, b.id))
             },
             Ui.Action(R.drawable.ic_delete, "Remove from library") { confirmDelete(b) },

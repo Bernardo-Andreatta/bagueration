@@ -254,7 +254,8 @@ class Ui(val ctx: Context, val th: ReaderTheme) {
      * with the icon inline so it stays centered with the text.
      */
     fun pill(text: String, icon: Int?, filled: Boolean, wide: Boolean = false, onClick: () -> Unit) = TextView(ctx).apply {
-        textSize = 14f; typeface = medium; gravity = Gravity.CENTER; maxLines = 1
+        // a long label wraps to a second line inside its card instead of running past the edge
+        textSize = 14f; typeface = medium; gravity = Gravity.CENTER; maxLines = 2
         val fg = if (filled) th.onAccent else th.accent
         setTextColor(fg)
         minHeight = dp(48)

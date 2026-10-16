@@ -47,7 +47,7 @@ class SettingsActivity : Activity() {
         }
     }
 
-    /** Bouncing dots on the sample button while the voice is still being prepared. */
+    /** Bouncing dots on the sample button while the voice is still being pre-loaded. */
     private var sampleDots: BouncingDots? = null
     private var sampleState = ""
 
@@ -118,14 +118,14 @@ class SettingsActivity : Activity() {
         col.addView(voiceCard())
         col.addView(presetCard().also { presetCardView = it })
         col.addView(pausesCard())
-        if (bookId != null) col.addView(card("Prepared audio", R.drawable.ic_headphones) {
+        if (bookId != null) col.addView(card("Pre-loaded audio", R.drawable.ic_headphones) {
             val all = Renders.list(this@SettingsActivity, bookId!!)
             val n = all.count { it.ready }
-            val preparing = if (RenderManager.current?.render?.bookId == bookId) " · 1 preparing" else ""
-            addView(row("Prepared audio for this book", (if (all.isEmpty()) "None yet" else "$n ready") + preparing) {
+            val preparing = if (RenderManager.current?.render?.bookId == bookId) " · 1 pre-loading" else ""
+            addView(row("Pre-loaded audio for this book", (if (all.isEmpty()) "None yet" else "$n ready") + preparing) {
                 startActivity(android.content.Intent(this@SettingsActivity, RendersActivity::class.java).putExtra(RendersActivity.EXTRA_BOOK, bookId))
             })
-            addView(hintView("Prepare chapters ahead of time: they play with no loading, even on a warm phone."))
+            addView(hintView("Pre-load chapters ahead of time: they play with no loading, even on a warm phone."))
         })
         if (bookId != null) col.addView(pronunciationsCard())
         col.addView(appearanceCard().also { appearanceCard = it })
@@ -688,7 +688,7 @@ class SettingsActivity : Activity() {
         // one preview at a time; the playing row shows a pause button
         val previewButtons = HashMap<String, android.widget.ImageButton>()
         var previewingId: String? = null
-        // the row whose sample is being prepared shows three bouncing dots, then a stop button once it plays
+        // the row whose sample is being pre-loaded shows three bouncing dots, then a stop button once it plays
         val dots = BouncingDots(th.accent, d)
         val buttonState = HashMap<String, String>()
         fun refreshButtons() {

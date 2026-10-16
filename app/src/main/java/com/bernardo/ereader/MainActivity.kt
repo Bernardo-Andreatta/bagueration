@@ -164,12 +164,11 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     private fun showMore() {
+        // no "Full screen" (the bars slide away on their own) and no "Library" (the back arrow is the library)
         Ui(this, th).menuSheet(null, listOfNotNull(
-            Ui.Action(R.drawable.ic_fullscreen, "Full screen") { setFullscreen(true) },
-            if (bookId != null) Ui.Action(R.drawable.ic_headphones, "Prepared audio") { openRenders() } else null,
+            if (bookId != null) Ui.Action(R.drawable.ic_headphones, "Pre-loaded audio") { openRenders() } else null,
             Ui.Action(R.drawable.ic_text_format, "Appearance") { openSettings(SettingsActivity.SECTION_APPEARANCE) },
             Ui.Action(R.drawable.ic_settings, "Settings") { openSettings(null) },
-            Ui.Action(R.drawable.ic_library, "Library") { showLibrary() },
         ))
     }
 
@@ -236,7 +235,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         busy = findViewById(R.id.busy)
         speedChip = findViewById(R.id.speedChip)
         audioChip = findViewById(R.id.audioChip)
-        // nothing prepared in this book yet: straight to "Prepare chapters"
+        // nothing prepared in this book yet: straight to "Pre-load chapters"
         audioChip.setOnClickListener { bookId?.let { openRenders(prepare = Renders.list(this, it).isEmpty()) } }
         controls = findViewById(R.id.controls)
         jumpBack = findViewById(R.id.jumpBack)
@@ -751,18 +750,18 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private var startAfterBatteryPrompt: Int? = null
 
-    /** First live reading in a book: mention heat/battery and point at preparing chapters. Nothing plays until a choice. */
+    /** First live reading in a book: mention heat/battery and point at pre-loading chapters. Nothing plays until a choice. */
     private fun showLiveTip(from: Int) {
         val id = bookId ?: return
         fun seen() = prefs.edit().putBoolean("live_tip_$id", true).apply()
         val restricted = !Background.unrestricted(this)
         Themes.dialog(this).setTitle("Reading aloud, live")
             .setMessage("The voice is made on your phone as it reads. Over long listens that warms the phone and uses battery.\n\n" +
-                "Or prepare this chapter first: it's made once, ahead of time, and plays with no loading. " +
+                "Or pre-load this chapter first: it's made once, ahead of time, and plays with no loading. " +
                 "You can start listening after a couple of minutes." +
                 if (restricted) "\n\nWith the screen off your phone slows this app down. Allowing unrestricted battery use helps." else "")
             .setPositiveButton("Read live") { _, _ -> seen(); startReading(from) }
-            .setNegativeButton("Prepare chapters") { _, _ -> seen(); openRenders(prepare = true) }
+            .setNegativeButton("Pre-load chapters") { _, _ -> seen(); openRenders(prepare = true) }
             .apply {
                 if (restricted) setNeutralButton("Allow") { _, _ ->
                     seen()
@@ -773,7 +772,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             .show()
     }
 
-    /** Prepared audio for this book, about the chapter on screen; [prepare] opens straight into "Prepare chapters". */
+    /** Pre-loaded audio for this book, about the chapter on screen; [prepare] opens straight into "Pre-load chapters". */
     private fun openRenders(prepare: Boolean = false) {
         val id = bookId ?: return
         val pos = if (pages.isNotEmpty()) pages[page] else 0
@@ -1425,7 +1424,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         pageView.postDelayed(applySpeed, 350)
     }
 
-    /** Player-bar shortcut to prepared audio, showing what's happening for this book. */
+    /** Player-bar shortcut to pre-loaded audio, showing what's happening for this book. */
     private val audioChipTick = object : Runnable {
         override fun run() { updateAudioChip(); if (RenderManager.isBusy) audioChip.postDelayed(this, 1000) }
     }
@@ -1438,18 +1437,18 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val making = RenderManager.current?.takeIf { it.render.bookId == id }
         val here = if (pages.isNotEmpty()) Renders.playableAt(this, id, pages[page]) else null
         val (label, icon) = when {
-            making != null -> "Preparing ${(making.fraction * 100).toInt()}%" to R.drawable.ic_graphic_eq
-            here != null -> "Prepared" to R.drawable.ic_headphones
-            else -> "Prepare" to R.drawable.ic_download
+            making != null -> "Pre-loading ${(making.fraction * 100).toInt()}%" to R.drawable.ic_graphic_eq
+            here != null -> "Pre-loaded" to R.drawable.ic_headphones
+            else -> "Pre-load" to R.drawable.ic_download
         }
         // a narrow screen shows just the icon
         val narrow = resources.configuration.screenWidthDp < 360
         audioChip.text = if (narrow) "" else label
         Icons.leading(audioChip, icon, th.accent, sizeDp = 16f, gapDp = if (narrow) 0f else 6f)
         audioChip.contentDescription = when {
-            making != null -> "Preparing audio, ${(making.fraction * 100).toInt()} percent. Open prepared audio"
-            here != null -> "This page plays prepared audio. Open prepared audio"
-            else -> "Prepare chapters ahead of time"
+            making != null -> "Pre-loading audio, ${(making.fraction * 100).toInt()} percent. Open pre-loaded audio"
+            here != null -> "This page plays pre-loaded audio. Open pre-loaded audio"
+            else -> "Pre-load chapters ahead of time"
         }
         audioChip.removeCallbacks(audioChipTick)
         if (making != null) audioChip.postDelayed(audioChipTick, 1000)
@@ -1556,7 +1555,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                 addView(TextView(this@MainActivity).apply { text = "2×"; textSize = 11.5f; setTextColor(th.dim); gravity = Gravity.END }, LinearLayout.LayoutParams(0, -2, 1f))
             }, LinearLayout.LayoutParams(-1, -2).apply { marginStart = dp(16); marginEnd = dp(16) })
             addView(presets, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(8), dp(16), dp(8), 0) })
-            addView(ui.hint(if (narrator.isPlayingFile) "Prepared audio keeps its voice and is sped up or slowed down to match."
+            addView(ui.hint(if (narrator.isPlayingFile) "Pre-loaded audio keeps its voice and is sped up or slowed down to match."
                 else "Changes apply right away, from the sentence being read.").apply {
                 gravity = Gravity.CENTER; setPadding(dp(8), dp(14), dp(8), 0)
             })
