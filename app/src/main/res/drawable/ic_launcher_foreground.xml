@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- An open book, tilted, with the voice rising from its spine. Drawn in a 512 box and fitted into the adaptive
+     icon's safe zone (the middle 66 dp of 108). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.16"
+        android:scaleY="0.16"
+        android:translateX="13.04"
+        android:translateY="13.04">
+        <group
+            android:translateX="-8"
+            android:translateY="41">
+            <group
+                android:rotation="-25"
+                android:pivotX="256"
+                android:pivotY="198">
+                <!-- left page -->
+                <path
+                    android:fillColor="#E6DCCB"
+                    android:pathData="M256 356 C 224 328, 168 320, 118 338 L118 206 C 168 188, 224 198, 256 224 Z" />
+                <!-- right page -->
+                <path
+                    android:fillColor="#D9A866"
+                    android:pathData="M256 356 C 288 328, 344 320, 394 338 L394 206 C 344 188, 288 198, 256 224 Z" />
+                <!-- spine -->
+                <path
+                    android:strokeColor="#211C18"
+                    android:strokeWidth="7"
+                    android:pathData="M256 224 L256 356" />
+                <!-- text lines -->
+                <path android:strokeColor="#211C18" android:strokeWidth="8" android:strokeLineCap="round" android:strokeAlpha="0.32"
+                    android:pathData="M142 258 Q 196 246 236 262" />
+                <path android:strokeColor="#211C18" android:strokeWidth="8" android:strokeLineCap="round" android:strokeAlpha="0.32"
+                    android:pathData="M142 292 Q 196 280 236 296" />
+                <path android:strokeColor="#211C18" android:strokeWidth="8" android:strokeLineCap="round" android:strokeAlpha="0.32"
+                    android:pathData="M276 262 Q 316 246 370 258" />
+                <path android:strokeColor="#211C18" android:strokeWidth="8" android:strokeLineCap="round" android:strokeAlpha="0.32"
+                    android:pathData="M276 296 Q 316 280 370 292" />
+                <!-- the voice -->
+                <path android:strokeColor="#D9A866" android:strokeWidth="14" android:strokeLineCap="round"
+                    android:pathData="M222 164 a 48 48 0 0 1 68 0" />
+                <path android:strokeColor="#D9A866" android:strokeWidth="14" android:strokeLineCap="round" android:strokeAlpha="0.66"
+                    android:pathData="M196 138 a 86 86 0 0 1 120 0" />
+                <path android:strokeColor="#D9A866" android:strokeWidth="14" android:strokeLineCap="round" android:strokeAlpha="0.36"
+                    android:pathData="M170 112 a 124 124 0 0 1 172 0" />
+            </group>
+        </group>
+    </group>
+</vector>

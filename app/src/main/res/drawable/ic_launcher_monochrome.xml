@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon version (Android 13+): the same book and voice as one silhouette; the launcher tints it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.16"
+        android:scaleY="0.16"
+        android:translateX="13.04"
+        android:translateY="13.04">
+        <group
+            android:translateX="-8"
+            android:translateY="41">
+            <group
+                android:rotation="-25"
+                android:pivotX="256"
+                android:pivotY="198">
+                <path
+                    android:fillColor="#FFFFFF"
+                    android:pathData="M256 356 C 224 328, 168 320, 118 338 L118 206 C 168 188, 224 198, 256 224 Z" />
+                <path
+                    android:fillColor="#FFFFFF"
+                    android:pathData="M256 356 C 288 328, 344 320, 394 338 L394 206 C 344 188, 288 198, 256 224 Z" />
+                <path android:strokeColor="#FFFFFF" android:strokeWidth="16" android:strokeLineCap="round"
+                    android:pathData="M222 164 a 48 48 0 0 1 68 0" />
+                <path android:strokeColor="#FFFFFF" android:strokeWidth="16" android:strokeLineCap="round"
+                    android:pathData="M196 138 a 86 86 0 0 1 120 0" />
+                <path android:strokeColor="#FFFFFF" android:strokeWidth="16" android:strokeLineCap="round"
+                    android:pathData="M170 112 a 124 124 0 0 1 172 0" />
+            </group>
+        </group>
+    </group>
+</vector>

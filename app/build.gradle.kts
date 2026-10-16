@@ -21,8 +21,8 @@ android {
     productFlavors {
         create("personal") {
             dimension = "audience"
-            manifestPlaceholders["appIcon"] = "@android:drawable/ic_menu_agenda"
-            manifestPlaceholders["appRoundIcon"] = "@android:drawable/ic_menu_agenda"
+            manifestPlaceholders["appIcon"] = "@mipmap/ic_launcher"
+            manifestPlaceholders["appRoundIcon"] = "@mipmap/ic_launcher_round"
         }
         create("friend") {
             dimension = "audience"
