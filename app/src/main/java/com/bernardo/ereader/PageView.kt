@@ -59,7 +59,9 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
         // A chapter is one tall view inside the scroll view. Without this clip, every redraw (a word mark fifteen times
         // a second, a new sentence) recorded all of the chapter's lines, which stuttered while the page glided. Only
         // the lines on screen, plus a screen above and below, are drawn.
-        if (getLocalVisibleRect(visible)) {
+        // only for a view much taller than what's on screen (a chapter): the appearance preview in Settings is a
+        // PageView too, and nobody asks it to redraw as that screen scrolls
+        if (getLocalVisibleRect(visible) && height > visible.height() * 3) {
             // vertical only: while a chapter slides in sideways the visible rect is shifted, and clipping the sides
             // too left a blank band over the text
             val margin = visible.height().coerceAtLeast(lineHeight * 4)
