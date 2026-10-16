@@ -44,9 +44,10 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
         // a second, a new sentence) recorded all of the chapter's lines, which stuttered while the page glided. Only
         // the lines on screen (plus a margin) are drawn, and the reader redraws the view as it scrolls.
         if (getLocalVisibleRect(visible)) {
+            // vertical only: while a chapter slides in sideways the visible rect is shifted, and clipping the sides
+            // too left a blank band over the text
             val margin = (lineHeight * 2).coerceAtLeast(64)
-            visible.inset(0, -margin)
-            canvas.clipRect(visible)
+            canvas.clipRect(0, visible.top - margin, width, visible.bottom + margin)
         }
         val layout = layout
         val t = text as? Spanned
