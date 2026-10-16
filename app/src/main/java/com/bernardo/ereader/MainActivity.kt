@@ -1237,7 +1237,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         heardPos = start
         saveProgress()
         spoken = start to end
-        if (mediaActive && chapterAt(start) != mediaChapter) syncMedia()
+        if (mediaActive && chapterAt(start) != mediaChapter) syncMedia() else tickMediaProgress()
         // screen off / app in the background: nothing is drawn (smooth scrolls never run), so just note the
         // position and catch up in onResume
         if (!visible) return
@@ -1896,13 +1896,38 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val bookTitle = prefs.getString("title_$id", id) ?: id
         val chapterTitle = book.chapters.getOrNull(ci)?.title ?: ""
         val cover = File(booksDir, "$id.jpg").takeIf { it.exists() }?.absolutePath
+        val (pos, dur) = chapterProgress()
+        lastMediaProgress = android.os.SystemClock.uptimeMillis()
         val svc = NarrationService.instance
-        if (svc != null) svc.update(playing, bookTitle, chapterTitle, cover)
+        if (svc != null) svc.update(playing, bookTitle, chapterTitle, cover, pos, dur)
         else if (playing) startForegroundService(Intent(this, NarrationService::class.java)
             .putExtra(NarrationService.EXTRA_PLAYING, true)
             .putExtra(NarrationService.EXTRA_TITLE, bookTitle)
             .putExtra(NarrationService.EXTRA_CHAPTER, chapterTitle)
-            .putExtra(NarrationService.EXTRA_COVER, cover))
+            .putExtra(NarrationService.EXTRA_COVER, cover)
+            .putExtra(NarrationService.EXTRA_POSITION, pos)
+            .putExtra(NarrationService.EXTRA_DURATION, dur))
+    }
+
+    private var lastMediaProgress = 0L
+
+    /** Where the voice is in its chapter as listening time at this speed: (position, length) in ms. */
+    private fun chapterProgress(): Pair<Long, Long> {
+        val ci = chapterAt(readPos)
+        val s = book.chapters.getOrNull(ci)?.start ?: 0
+        val e = book.chapters.getOrNull(ci + 1)?.start ?: text.length
+        val speed = narrator.speed; val pause = narrator.pauseMs
+        return RenderManager.estimateMs((readPos - s).coerceAtLeast(0), speed, pause) to RenderManager.estimateMs((e - s).coerceAtLeast(1), speed, pause)
+    }
+
+    /** The media controls' progress bar: nudged every few seconds (the system extrapolates in between). */
+    private fun tickMediaProgress() {
+        if (!mediaActive) return
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastMediaProgress < 4000) return
+        lastMediaProgress = now
+        val (pos, dur) = chapterProgress()
+        NarrationService.instance?.progress(pos, dur)
     }
 
     override fun remotePlay() = runOnUiThread {

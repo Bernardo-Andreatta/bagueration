@@ -36,6 +36,8 @@ class NarrationService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_CHAPTER = "chapter"
         const val EXTRA_COVER = "cover"
+        const val EXTRA_POSITION = "position"
+        const val EXTRA_DURATION = "duration"
         private const val ACTION_TOGGLE = "com.bernardo.ereader.TOGGLE"
         private const val ACTION_NEXT = "com.bernardo.ereader.NEXT"
         private const val ACTION_PREV = "com.bernardo.ereader.PREV"
@@ -88,33 +90,57 @@ class NarrationService : Service() {
                 intent.getStringExtra(EXTRA_TITLE) ?: "",
                 intent.getStringExtra(EXTRA_CHAPTER) ?: "",
                 intent.getStringExtra(EXTRA_COVER),
+                intent.getLongExtra(EXTRA_POSITION, -1), intent.getLongExtra(EXTRA_DURATION, -1),
             )
         }
         return START_NOT_STICKY
     }
 
-    /** Called by the reader whenever play state / book / chapter changes. */
-    fun update(isPlaying: Boolean, bookTitle: String, chapterTitle: String, cover: String?) {
-        playing = isPlaying
-        title = bookTitle
-        chapter = chapterTitle
-        if (cover != coverPath) {
-            coverPath = cover
-            this.cover = cover?.let { runCatching { BitmapFactory.decodeFile(it) }.getOrNull() }
-        }
+    /**
+     * The chapter's progress bar in the media controls: the reader sends where the voice is every few seconds, and
+     * the system moves the bar on its own in between (playback speed 1 = real time). No notification rebuild.
+     */
+    fun progress(position: Long, duration: Long) {
+        positionMs = position
+        durationMs = duration
+        publish()
+    }
 
+    private fun publish() {
         session.setMetadata(MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, title)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, chapter)
             .putString(MediaMetadata.METADATA_KEY_ALBUM, "bagueration")
-            .apply { this@NarrationService.cover?.let { putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) } }
+            .apply {
+                this@NarrationService.cover?.let { putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
+                if (durationMs > 0) putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs)
+            }
             .build())
         session.setPlaybackState(PlaybackState.Builder()
             .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE or
                 PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS or PlaybackState.ACTION_STOP)
             .setState(if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
-                PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1f)
+                if (positionMs >= 0 && durationMs > 0) positionMs.coerceAtMost(durationMs) else PlaybackState.PLAYBACK_POSITION_UNKNOWN,
+                if (playing) 1f else 0f)
             .build())
+    }
+
+    /** Where the voice is in the chapter and how long the chapter is, as listening time (ms); -1 = unknown. */
+    private var positionMs = -1L
+    private var durationMs = -1L
+
+    /** Called by the reader whenever play state / book / chapter changes. */
+    fun update(isPlaying: Boolean, bookTitle: String, chapterTitle: String, cover: String?, position: Long = -1, duration: Long = -1) {
+        playing = isPlaying
+        title = bookTitle
+        chapter = chapterTitle
+        positionMs = position
+        durationMs = duration
+        if (cover != coverPath) {
+            coverPath = cover
+            this.cover = cover?.let { runCatching { BitmapFactory.decodeFile(it) }.getOrNull() }
+        }
+        publish()
 
         val n = buildNotification()
         if (playing) {
