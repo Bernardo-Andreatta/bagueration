@@ -230,6 +230,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         setContentView(R.layout.activity_main)
         scroll = findViewById(R.id.scroll)
         pageView = findViewById(R.id.page)
+        (pageView as? PageView)?.clipToVisible = true   // a chapter is tall: draw only what's near the screen
         pageLabel = findViewById(R.id.pageLabel)
         playBtn = findViewById(R.id.play)
         busy = findViewById(R.id.busy)
