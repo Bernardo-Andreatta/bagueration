@@ -785,14 +785,14 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             return out
         }
 
-        /** Text as it should be spoken: expand abbreviations the voice would otherwise trip over. */
+        /** Text as it should be spoken: expand abbreviations, numerals and years the voice would otherwise trip over. */
         private fun speakable(t: String, lang: String): String {
             var out = t.replace(SPACED_ELLIPSIS, "…")
                 .replace(FOOTNOTE_MARK, "")      // "it[1]", "footnote*", "word²" were read out as "one" / "asterisk"
                 .replace(DOUBLE_HYPHEN, " — ")
             for ((re, say) in pronunciations) out = re.replace(out, Regex.escapeReplacement(say))
             for ((re, word) in SPOKEN_BY_LANG[lang].orEmpty()) out = re.replace(out, word)
-            return out
+            return SpokenText.normalise(out, lang)
         }
 
         /**

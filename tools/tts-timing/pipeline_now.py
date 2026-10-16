@@ -1,6 +1,7 @@
 """Python mirror of Narrator.kt's current pipeline (exact pauses at every boundary, short-input pace fix)."""
 import re, math, numpy as np
 import pipeline_before as pipe_old
+import speak
 from eng import gen
 VOWELS = re.compile(r"[aeiouyàáâãäåèéêëìíîïòóôõöùúûüæœ]+", re.I)
 def syllables(t):
@@ -16,6 +17,8 @@ CLOSERS = "\"'”’»)]"
 class P(pipe_old.P):
     def __init__(s, text, minw=2, minl=1, bk=0.7, **kw):
         super().__init__(text, **kw); s.minw=minw; s.minl=minl; s.bk=bk
+    def speakable(s, t):
+        return speak.speakable(t, "en", pipe_old.SPOKEN)
     def spaced_ellipsis_end(s, i):
         """i at '.', returns index after '. . .' if it starts here, else -1"""
         m = re.compile(r"\.( \.){2,}").match(s.t, i)
