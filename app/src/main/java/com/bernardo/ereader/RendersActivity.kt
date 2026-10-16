@@ -35,6 +35,7 @@ class RendersActivity : Activity() {
     }
 
     private lateinit var th: ReaderTheme
+    private lateinit var ui: Ui
     private val d by lazy { resources.displayMetrics.density }
     private fun dp(v: Int) = (v * d).toInt()
     private fun dp(v: Float) = (v * d).toInt()
@@ -56,9 +57,10 @@ class RendersActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         th = Themes.current(this)
+        ui = Ui(this, th)
         Themes.applyChrome(this, th)
         Ui.edgeToEdge(this)
-        val bar = Ui(this, th).topBar("Audio files", BookStore.prefs(this).getString("title_$bookId", bookId),
+        val bar = ui.topBar("Audio files", BookStore.prefs(this).getString("title_$bookId", bookId),
             nav = Ui.Action(R.drawable.ic_chevron_left, "Back") { finish() },
             actions = listOf(Ui.Action(R.drawable.ic_add, "New audio file") { newFile() }))
         RenderManager.markInterrupted(this, bookId)
@@ -122,16 +124,9 @@ class RendersActivity : Activity() {
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
     }
 
-    private fun header(text: String) = TextView(this).apply {
-        this.text = text.uppercase(); textSize = 12f; letterSpacing = 0.1f
-        setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD
-        setPadding(dp(4), dp(18), dp(4), dp(2))
-    }
+    private fun header(text: String) = ui.header(text).apply { setPadding(dp(4), dp(18), dp(4), dp(2)) }
 
-    private fun surface(stroke: Int? = null) = GradientDrawable().apply {
-        cornerRadius = dp(20).toFloat(); setColor(th.bar)
-        stroke?.let { setStroke(dp(1.5f), it) }
-    }
+    private fun surface(stroke: Int? = null) = ui.surface(stroke)
 
     private fun batteryCard() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -151,28 +146,10 @@ class RendersActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
     }
 
-    private fun emptyState() = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
-        setPadding(dp(24), dp(32), dp(24), dp(24))
-        background = surface()
-        addView(ImageView(this@RendersActivity).apply {
-            setImageDrawable(Icons.get(this@RendersActivity, R.drawable.ic_audio_file, th.accent, 36f))
-            scaleType = ImageView.ScaleType.CENTER
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(tinted(0.16f)) }
-        }, LinearLayout.LayoutParams(dp(72), dp(72)))
-        addView(TextView(this@RendersActivity).apply {
-            text = "No audio files yet"; textSize = 18f; setTextColor(th.text); typeface = medium; gravity = Gravity.CENTER
-            setPadding(0, dp(16), 0, dp(6))
-        })
-        addView(TextView(this@RendersActivity).apply {
-            text = "Pick some chapters or a length, and the audio is made in the background. " +
-                "You can start listening after the first few minutes, while the rest is still being made."
-            textSize = 13.5f; setTextColor(th.dim); gravity = Gravity.CENTER; setLineSpacing(0f, 1.25f)
-        })
-        addView(pill("New audio file", R.drawable.ic_add, filled = true) { newFile() },
-            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(20) })
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) }
-    }
+    private fun emptyState() = ui.emptyState(R.drawable.ic_audio_file, "No audio files yet",
+        "Pick some chapters or a length, and the audio is made in the background. " +
+            "You can start listening after the first few minutes, while the rest is still being made.",
+        "New audio file") { newFile() }
 
     private fun card(r: Render, active: Boolean): View {
         val kind = kindOf(r)
@@ -182,7 +159,7 @@ class RendersActivity : Activity() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(16), dp(16), dp(12))
-            background = surface(if (active) Themes.mix(th.bar, th.accent, 0.75f) else null)
+            background = surface(if (active) Themes.mix(th.surface, th.accent, 0.75f) else null)
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) }
         }
 
@@ -232,7 +209,7 @@ class RendersActivity : Activity() {
 
         // progress: how much is made, and what's going on
         if (kind != Kind.READY) {
-            val bar = progressBar(if (kind == Kind.MAKING && !pausing && !hold) th.accent else Themes.mix(th.bar, th.dim, 0.8f))
+            val bar = progressBar(if (kind == Kind.MAKING && !pausing && !hold) th.accent else Themes.mix(th.surface, th.dim, 0.8f))
             val line = TextView(this).apply { textSize = 13f; setTextColor(th.text); setLineSpacing(0f, 1.2f); setPadding(0, dp(8), 0, 0) }
             fun update() {
                 val fraction = p?.fraction ?: r.fraction
@@ -338,48 +315,13 @@ class RendersActivity : Activity() {
         render()
     }
 
-    // ---------- building blocks ----------
+    // ---------- building blocks (the shared ones in Ui) ----------
 
-    private fun tinted(t: Float) = Themes.mix(th.bar, th.accent, t)
-    private fun neutral(t: Float) = Themes.mix(th.bar, th.text, t)
-    private fun ripple(c: Int) = ColorStateList.valueOf((c and 0xFFFFFF) or 0x33000000)
-
-    private fun progressBar(color: Int) = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-        max = 1000
-        val radius = dp(3).toFloat()
-        val track = GradientDrawable().apply { cornerRadius = radius; setColor(neutral(0.12f)) }
-        val fill = ClipDrawable(GradientDrawable().apply { cornerRadius = radius; setColor(color) }, Gravity.START, ClipDrawable.HORIZONTAL)
-        progressDrawable = LayerDrawable(arrayOf<Drawable>(track, fill)).apply {
-            setId(0, android.R.id.background); setId(1, android.R.id.progress)
-        }
-    }
-
-    /**
-     * Pill button: filled (the main action) or outlined, with an optional leading icon. A [wide] one fills its row,
-     * with the icon inline so it stays centered with the text.
-     */
-    private fun pill(text: String, icon: Int?, filled: Boolean, wide: Boolean = false, onClick: () -> Unit) = TextView(this).apply {
-        textSize = 14f; typeface = medium; gravity = Gravity.CENTER; maxLines = 1
-        val fg = if (filled) th.onAccent else th.accent
-        setTextColor(fg)
-        minHeight = dp(40)
-        setPadding(dp(if (icon != null && !wide) 14 else 18), dp(8), dp(18), dp(8))
-        this.text = if (icon != null && wide) Icons.inline(context, icon, fg, text) else text
-        if (icon != null && !wide) Icons.leading(this, icon, fg, sizeDp = 18f, gapDp = 6f)
-        background = RippleDrawable(ripple(if (filled) th.onAccent else th.accent),
-            GradientDrawable().apply { cornerRadius = dp(20).toFloat(); if (filled) setColor(th.accent) else setStroke(dp(1), th.accent) }, null)
-        setOnClickListener { onClick() }
-    }
-
-    private fun iconButton(icon: Int, description: String, onClick: () -> Unit) = ImageButton(this).apply {
-        setImageDrawable(Icons.get(this@RendersActivity, icon, th.dim, 22f))
-        scaleType = ImageView.ScaleType.CENTER
-        background = RippleDrawable(ripple(th.text), null, GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(-1) })
-        contentDescription = description
-        tooltipText = description
-        setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
-    }
+    private fun tinted(t: Float) = ui.tinted(t)
+    private fun neutral(t: Float) = Themes.mix(th.surface, th.text, t)
+    private fun progressBar(color: Int) = ui.progressBar(color)
+    private fun pill(text: String, icon: Int?, filled: Boolean, wide: Boolean = false, onClick: () -> Unit) = ui.pill(text, icon, filled, wide, onClick)
+    private fun iconButton(icon: Int, description: String, onClick: () -> Unit) = ui.iconButton(icon, description, tint = th.dim, onClick = onClick)
 
     // ---------- new file ----------
 
@@ -413,7 +355,7 @@ class RendersActivity : Activity() {
         }
         fun chapterName(i: Int) = "${i + 1}. ${chapters[i].title}"
 
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0) }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), 0) }
         val fromRow = pickerRow("Start at")
         val toRow = pickerRow("Until the end of")
         val audioLine = infoLine(R.drawable.ic_timer, th.text)
@@ -434,10 +376,9 @@ class RendersActivity : Activity() {
                 val on = c.tag == lengthMin
                 c.setTextColor(if (on) th.onAccent else th.text)
                 c.typeface = if (on) medium else Typeface.DEFAULT
-                c.background = RippleDrawable(ripple(th.accent), GradientDrawable().apply {
-                    cornerRadius = dp(18).toFloat()
-                    if (on) setColor(th.accent) else setStroke(dp(1), Themes.mix(th.bar, th.dim, 0.7f))
-                }, null)
+                c.background = RippleDrawable(ui.ripple(th.accent), if (on) ui.rounded(th.accent, 20) else ui.rounded(null, 20, th.outline),
+                    ui.rounded(-1, 20))
+                c.isSelected = on
             }
         }
         fromRow.view.setOnClickListener {
@@ -454,6 +395,7 @@ class RendersActivity : Activity() {
         }
         for ((label, min) in listOf("Chapters" to 0, "30 min" to 30, "1 h" to 60, "2 h" to 120, "4 h" to 240)) lengthChips.addView(TextView(this).apply {
             text = label; tag = min; textSize = 12.5f; gravity = Gravity.CENTER; maxLines = 1
+            minHeight = dp(44)
             setPadding(dp(4), dp(8), dp(4), dp(8))
             setOnClickListener { lengthMin = min; update() }
         }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = if (min == 240) 0 else dp(6) })
@@ -464,7 +406,7 @@ class RendersActivity : Activity() {
             text = "Or make a set length"; textSize = 12.5f; setTextColor(th.dim); setPadding(dp(2), dp(14), 0, dp(8))
         })
         box.addView(lengthChips)
-        box.addView(View(this).apply { setBackgroundColor(neutral(0.12f)) },
+        box.addView(View(this).apply { setBackgroundColor(th.outline) },
             LinearLayout.LayoutParams(-1, maxOf(1, dp(1) / 2)).apply { topMargin = dp(16); bottomMargin = dp(6) })
         box.addView(audioLine)
         box.addView(makeLine)
@@ -476,20 +418,27 @@ class RendersActivity : Activity() {
         })
         update()
 
-        Themes.dialog(this).setTitle("New audio file").setView(ScrollView(this).apply { addView(box) })
-            .setPositiveButton("Make it") { _, _ ->
-                val (from, to) = range()
-                val label = when {
-                    lengthMin > 0 -> "Chapter ${fromIdx + 1} · ${RenderManager.formatDuration(lengthMin * 60_000L)}"
-                    fromIdx == toIdx -> "Chapter ${fromIdx + 1}"
-                    else -> "Chapters ${fromIdx + 1}–${toIdx + 1}"
-                }
-                val settings = preset.serialize() + "|" + phrasing
-                val r = Render("r" + System.currentTimeMillis(), bookId, from, to, label, voice.id, settings, "processing", 0, System.currentTimeMillis())
-                RenderManager.enqueue(this, r, bookText, specFrom(voice.id, settings))
-                render()
+        lateinit var sheet: Ui.Sheet
+        fun make() {
+            val (from, to) = range()
+            val label = when {
+                lengthMin > 0 -> "Chapter ${fromIdx + 1} · ${RenderManager.formatDuration(lengthMin * 60_000L)}"
+                fromIdx == toIdx -> "Chapter ${fromIdx + 1}"
+                else -> "Chapters ${fromIdx + 1}–${toIdx + 1}"
             }
-            .setNegativeButton("Cancel", null).show()
+            val settings = preset.serialize() + "|" + phrasing
+            val r = Render("r" + System.currentTimeMillis(), bookId, from, to, label, voice.id, settings, "processing", 0, System.currentTimeMillis())
+            RenderManager.enqueue(this, r, bookText, specFrom(voice.id, settings))
+            sheet.dismiss()
+            render()
+        }
+        box.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            addView(pill("Cancel", null, filled = false) { sheet.dismiss() }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+            addView(pill("Make it", R.drawable.ic_audio_file, filled = true) { make() })
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) })
+        sheet = ui.sheet("New audio file") { addView(box) }
+        sheet.show()
     }
 
     private class Picker(val view: View, val label: TextView, val value: TextView)
@@ -504,7 +453,7 @@ class RendersActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(56)
             setPadding(dp(14), dp(8), dp(8), dp(8))
-            background = RippleDrawable(ripple(th.accent), GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(neutral(0.07f)) }, null)
+            background = RippleDrawable(ui.ripple(th.accent), ui.rounded(th.surface, 14, th.outline), ui.rounded(-1, 14))
             addView(LinearLayout(this@RendersActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(labelView); addView(valueView)

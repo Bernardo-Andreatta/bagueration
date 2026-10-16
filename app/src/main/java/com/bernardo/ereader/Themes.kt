@@ -24,7 +24,7 @@ class ReaderTheme(
     /** Cards on the page. */
     val surface: Int = if (light) Themes.mix(bg, 0xFFFFFFFF.toInt(), 0.5f) else Themes.mix(bg, 0xFFFFFFFF.toInt(), 0.06f),
     /** Hairlines: card borders, dividers, unselected chips. */
-    val outline: Int = Themes.mix(bar, text, 0.14f),
+    val outline: Int = Themes.mix(bar, text, if (light) 0.14f else 0.24f),
     /** Behind sheets: the page, faded. */
     val scrim: Int = (bg and 0xFFFFFF) or (0x99 shl 24),
 )

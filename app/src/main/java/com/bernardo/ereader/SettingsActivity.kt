@@ -29,12 +29,13 @@ class SettingsActivity : Activity() {
 
         // layout, in dp: page margin, card padding, and how far rows reach into the card padding
         private const val PAGE_PAD = 16
-        private const val CARD_PAD = 20
-        private const val ROW_INSET = 10
+        private const val CARD_PAD = Ui.CARD_PAD
+        private const val ROW_INSET = Ui.ROW_INSET
     }
 
     private val prefs by lazy { BookStore.prefs(this) }
     private lateinit var th: ReaderTheme
+    private lateinit var ui: Ui
     private val d by lazy { resources.displayMetrics.density }
     private fun dp(v: Int) = (v * d).toInt()
     private val narrator get() = Narrator.instance
@@ -92,8 +93,9 @@ class SettingsActivity : Activity() {
     private fun build() {
         val keepY = scrollView?.scrollY
         th = Themes.current(this)
+        ui = Ui(this, th).apply { onTouched = { touched = it } }
         Themes.applyChrome(this, th)
-        val bar = Ui(this, th).topBar("Settings", nav = Ui.Action(R.drawable.ic_chevron_left, "Back") { finish() })
+        val bar = ui.topBar("Settings", nav = Ui.Action(R.drawable.ic_chevron_left, "Back") { finish() })
 
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(PAGE_PAD), dp(4), dp(PAGE_PAD), dp(32)) }
         col.addView(voiceCard())
@@ -168,9 +170,9 @@ class SettingsActivity : Activity() {
 
         addView(divider())
         slider("Speed", 0.5f, 2.0f, 0.05f, prefs.getFloat("speed", 1.0f), default = rec().speed,
-            format = { "${"%.2f".format(Locale.US, it).trimEnd('0').trimEnd('.')}×" }) { v ->
-            prefs.edit().putFloat("speed", v).apply()
-            narrator?.speed = v
+            format = { "${"%.2f".format(Locale.US, it).trimEnd('0').trimEnd('.')}×" }) { speed ->
+            prefs.edit().putFloat("speed", speed).apply()
+            narrator?.speed = speed
             soundChanged(regenerate = true)
             refreshPresets()
         }
@@ -340,7 +342,7 @@ class SettingsActivity : Activity() {
 
     private fun appearanceCard() = card("Appearance", R.drawable.ic_palette) {
         // live preview of how the page will look
-        addView(TextView(this@SettingsActivity).apply {
+        addView(PageView(this@SettingsActivity, null).apply {
             setText(sampleText(), TextView.BufferType.SPANNABLE)
             setTextColor(th.text)
             setPadding(dp(18), dp(16), dp(18), dp(16))
@@ -355,13 +357,17 @@ class SettingsActivity : Activity() {
         // never customized yet? start from the theme in use
         val customBg = if (p.contains("custom_bg")) p.getInt("custom_bg", th.bg) else th.bg
         val customAccent = if (p.contains("custom_accent")) p.getInt("custom_accent", th.accent) else th.accent
-        addView(LinearLayout(this@SettingsActivity).apply {
+        val themeRow = LinearLayout(this@SettingsActivity).apply {
             orientation = LinearLayout.HORIZONTAL
             val custom = Themes.derive(customBg, customAccent)
             for (t in Themes.all + custom) addView(LinearLayout(this@SettingsActivity).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+                background = pressable()
+                contentDescription = t.name + if (t.id == th.id) ", selected" else ""
                 addView(TextView(this@SettingsActivity).apply {
-                    text = "Aa"; gravity = Gravity.CENTER; textSize = 14f; typeface = Typeface.SERIF
+                    text = "Aa"; gravity = Gravity.CENTER; textSize = 15f; typeface = Ui.bookFont(this@SettingsActivity)
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     setTextColor(if (t.id == "custom") t.accent else t.text)
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.OVAL; setColor(t.bg)
@@ -369,14 +375,26 @@ class SettingsActivity : Activity() {
                     }
                 }, LinearLayout.LayoutParams(dp(44), dp(44)))
                 addView(TextView(this@SettingsActivity).apply {
-                    text = t.name; textSize = 10.5f; gravity = Gravity.CENTER; setTextColor(th.dim); setPadding(0, dp(4), 0, 0)
+                    text = t.name; textSize = 11.5f; gravity = Gravity.CENTER; setTextColor(if (t.id == th.id) th.text else th.dim)
+                    setPadding(0, dp(4), 0, 0); maxLines = 1
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 })
                 setOnClickListener {
                     if (t.id == "custom") Themes.setCustom(this@SettingsActivity, customBg, customAccent) else Themes.set(this@SettingsActivity, t)
                     rebuildAt(SECTION_APPEARANCE)
                 }
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+            }, LinearLayout.LayoutParams(dp(64), -2).apply { marginEnd = dp(2) })
+        }
+        // seven presets and Custom no longer fit side by side: a row that scrolls, kept on the selected one
+        addView(android.widget.HorizontalScrollView(this@SettingsActivity).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            addView(themeRow)
+            post {
+                val sel = Themes.all.indexOfFirst { it.id == th.id }.let { if (it < 0) Themes.all.size else it }
+                themeRow.getChildAt(sel)?.let { v -> scrollTo((v.left - width / 2 + v.width / 2).coerceAtLeast(0), 0) }
+            }
+        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6); marginStart = -dp(ROW_INSET); marginEnd = -dp(ROW_INSET) })
 
         if (th.id == "custom") {
         addView(label("Background"))
@@ -406,10 +424,18 @@ class SettingsActivity : Activity() {
         val font = prefs.getString("font", "literata")
         addView(label("Font"))
         lateinit var fontRow: View
-        fontRow = chips(listOf("Literata" to "literata", "Serif" to "serif", "Sans" to "sans"), font) { v ->
+        fontRow = ui.chips(listOf("Literata" to "literata", "Serif" to "serif", "Sans" to "sans"), font,
+            fonts = listOf("literata", "serif", "sans").associateWith { Ui.bookFont(this@SettingsActivity, it) }) { v ->
             prefs.edit().putString("font", v).apply(); keepInPlace(fontRow) { refreshSample() }
         }
         addView(fontRow)
+
+        addView(label("Margins"))
+        lateinit var marginRow: View
+        marginRow = chips(listOf("Narrow" to "16", "Normal" to "24", "Wide" to "32"), prefs.getInt("margins", 24).toString()) { v ->
+            prefs.edit().putInt("margins", v.toInt()).apply(); keepInPlace(marginRow) { refreshSample() }
+        }
+        addView(marginRow)
 
         val spacing = prefs.getFloat("spacing", 1.4f)
         addView(label("Line spacing"))
@@ -461,7 +487,7 @@ class SettingsActivity : Activity() {
         val it0 = sb.indexOf("in no hurry at all")
         sb.setSpan(android.text.style.StyleSpan(Typeface.ITALIC), it0, it0 + "in no hurry at all".length, flag)
         val q = sb.indexOf("Would today be different?")
-        sb.setSpan(android.text.style.BackgroundColorSpan(th.highlight), q, q + "Would today be different?".length, flag)
+        sb.setSpan(Mark(th.highlight, 2), q, q + "Would today be different?".length, flag)
         return sb
     }
 
@@ -470,11 +496,13 @@ class SettingsActivity : Activity() {
         tv.textSize = size ?: prefs.getInt("font_size", 19).toFloat()
         tv.typeface = Ui.bookFont(this)
         tv.setLineSpacing(0f, prefs.getFloat("spacing", 1.4f))
+        val side = dp(prefs.getInt("margins", 24) * 3 / 4)   // the preview is narrower than the page: scaled down
+        tv.setPadding(side, dp(16), side, dp(16))
         tv.justificationMode = if (prefs.getBoolean("justify", true))
             android.text.Layout.JUSTIFICATION_MODE_INTER_WORD else android.text.Layout.JUSTIFICATION_MODE_NONE
         // the page background (color, or paper), inside the preview's rounded border
         tv.background = android.graphics.drawable.LayerDrawable(arrayOf(Themes.pageBackground(this, th),
-            GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setStroke(dp(1), th.dim and 0x55FFFFFF) }))
+            GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setStroke(dp(1), th.outline) }))
         tv.outlineProvider = object : android.view.ViewOutlineProvider() {
             override fun getOutline(v: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, v.width, v.height, dp(14).toFloat())
         }
@@ -595,7 +623,7 @@ class SettingsActivity : Activity() {
         Themes.dialog(this).setTitle("Reset settings?")
             .setMessage("Speed and pauses go back to the recommended settings for your voice, and text settings to how they started. Your voice, colors and books stay as they are.")
             .setPositiveButton("Reset") { _, _ ->
-                prefs.edit().apply { for (k in listOf("font_size", "font", "spacing", "justify", "paper_texture")) remove(k) }.apply()
+                prefs.edit().apply { for (k in listOf("font_size", "font", "spacing", "justify", "paper_texture", "margins")) remove(k) }.apply()
                 rec().apply(this, narrator, currentVoice())
                 soundChanged(regenerate = true)
                 build()
@@ -623,8 +651,8 @@ class SettingsActivity : Activity() {
     private fun pickVoice() {
         val current = currentVoice()
         val detected = bookLang
-        lateinit var dialog: android.app.AlertDialog
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(8)) }
+        lateinit var dialog: Ui.Sheet
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
         // one preview at a time; the playing row shows a pause button
         val previewButtons = HashMap<String, android.widget.ImageButton>()
@@ -750,10 +778,7 @@ class SettingsActivity : Activity() {
         }
         list.addView(hintView("Hold a downloaded voice to delete it.").apply { setPadding(dp(12), dp(14), dp(12), 0) })
 
-        dialog = Themes.dialog(this).setTitle("Choose a voice")
-            .setView(ScrollView(this).apply { addView(list) })
-            .setNegativeButton("Close", null)
-            .create()
+        dialog = ui.sheet("Choose a voice") { addView(list) }
         dialog.setOnDismissListener {
             if (narrator?.isPreviewing == true) narrator?.stop()
             intent.removeExtra(EXTRA_SECTION)
@@ -763,219 +788,29 @@ class SettingsActivity : Activity() {
     }
 
     // ---------- building blocks ----------
-    // One visual language for every card: a header with an icon, rows that light up when pressed, labels,
-    // hints, segmented choices, sliders that show their default, and pill buttons (filled or outlined).
+    // The shared vocabulary in Ui; these keep the call sites short.
 
-    private val medium by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
-
-    private fun card(title: String, icon: Int, content: LinearLayout.() -> Unit) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(CARD_PAD), dp(16), dp(CARD_PAD), dp(12))
-        clipToPadding = false   // rows reach into the padding so their pressed highlight has room around the text
-        background = GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(th.bar) }
-        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }
-        addView(TextView(this@SettingsActivity).apply {
-            text = title.uppercase(); textSize = 12f; letterSpacing = 0.1f
-            setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_VERTICAL
-            Icons.leading(this, icon, th.accent, sizeDp = 18f, gapDp = 10f)
-            setPadding(0, 0, 0, dp(8))
-        })
-        content()
-    }
-
-    /** Full-width row params that reach [ROW_INSET] into the card padding on both sides. */
-    private fun insetParams() = LinearLayout.LayoutParams(-1, -2).apply { marginStart = -dp(ROW_INSET); marginEnd = -dp(ROW_INSET) }
-
-    private fun divider() = View(this).apply {
-        setBackgroundColor(Themes.mix(th.bar, th.text, 0.12f))
-        layoutParams = LinearLayout.LayoutParams(-1, maxOf(1, dp(1) / 2)).apply { topMargin = dp(10); bottomMargin = dp(4) }
-    }
-
-    private fun label(t: String) = TextView(this).apply {
-        text = t; textSize = 15f; setTextColor(th.text); setPadding(0, dp(14), 0, dp(8))
-    }
-
-    private fun hintView(t: String) = TextView(this).apply {
-        text = t; textSize = 12.5f; setTextColor(th.dim); setLineSpacing(0f, 1.25f); setPadding(0, dp(2), 0, dp(6))
-    }
-
-    /** Background for tappable rows: rounded, with the accent ripple; [fill] marks the selected one. */
-    private fun pressable(fill: Int? = null): android.graphics.drawable.Drawable {
-        fun shape(c: Int) = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(c) }
-        return android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple(th.accent)), fill?.let(::shape), shape(-1))
-    }
-
-    private fun ripple(c: Int) = (c and 0xFFFFFF) or 0x33000000
-    private fun selectedFill() = Themes.mix(th.bar, th.accent, 0.16f)
-
-    /** A row that opens something: title, its current value underneath, and a chevron. */
-    private fun row(title: String, value: String, onClick: () -> Unit) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dp(56)
-        setPadding(dp(ROW_INSET), dp(8), dp(ROW_INSET - 4), dp(8))
-        background = pressable()
-        addView(LinearLayout(this@SettingsActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(TextView(this@SettingsActivity).apply { text = title; textSize = 15f; setTextColor(th.text) })
-            addView(TextView(this@SettingsActivity).apply { text = value; textSize = 13f; setTextColor(th.dim); setPadding(0, dp(2), 0, 0) })
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(android.widget.ImageView(this@SettingsActivity).apply {
-            setImageDrawable(Icons.get(this@SettingsActivity, R.drawable.ic_chevron_right, th.dim, 22f))
-        }, LinearLayout.LayoutParams(dp(22), dp(22)))
-        setOnClickListener { onClick() }
-        layoutParams = insetParams()
-    }
-
-    /** One option in a single-choice list: radio mark, title and a description. */
+    private val medium get() = ui.medium
+    private fun card(title: String, icon: Int, content: LinearLayout.() -> Unit) = ui.card(title, icon, content = content)
+    private fun insetParams() = ui.insetParams()
+    private fun divider() = ui.divider()
+    private fun label(t: String) = ui.label(t)
+    private fun hintView(t: String) = ui.hint(t)
+    private fun pressable(fill: Int? = null) = ui.pressable(fill)
+    private fun selectedFill() = ui.selectedFill()
+    private fun row(title: String, value: String, onClick: () -> Unit) = ui.row(title, value, onClick = onClick)
     private fun choiceRow(title: String, summary: String, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(ROW_INSET), dp(10), dp(ROW_INSET), dp(10))
-            background = pressable(if (selected) selectedFill() else null)
-            addView(android.widget.ImageView(this@SettingsActivity).apply {
-                setImageDrawable(Icons.get(this@SettingsActivity, if (selected) R.drawable.ic_radio_checked else R.drawable.ic_radio_unchecked,
-                    if (selected) th.accent else th.dim, 20f))
-            }, LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(14); topMargin = dp(1) })
-            addView(LinearLayout(this@SettingsActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(TextView(this@SettingsActivity).apply {
-                    text = title; textSize = 15f; setTextColor(th.text); if (selected) typeface = medium
-                })
-                addView(TextView(this@SettingsActivity).apply {
-                    text = summary; textSize = 13f; setTextColor(th.dim); setLineSpacing(0f, 1.2f); setPadding(0, dp(2), 0, 0)
-                })
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            if (!enabled) alpha = 0.6f
-            if (enabled && !selected) setOnClickListener { onClick() }
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) }
-        }
-
-    /** Pill button: filled (the main action) or outlined, with an optional leading icon. */
-    private fun button(text: String, icon: Int?, filled: Boolean, onClick: () -> Unit) = TextView(this).apply {
-        this.text = text; textSize = 14f; typeface = medium; gravity = Gravity.CENTER
-        val fg = if (filled) th.onAccent else th.accent
-        setTextColor(fg)
-        minHeight = dp(40)
-        setPadding(dp(if (icon != null) 16 else 20), dp(8), dp(20), dp(8))
-        icon?.let { Icons.leading(this, it, fg) }
-        background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple(if (filled) th.onAccent else th.accent)),
-            GradientDrawable().apply { cornerRadius = dp(20).toFloat(); if (filled) setColor(th.accent) else setStroke(dp(1), th.accent) }, null)
-        setOnClickListener { onClick() }
-    }
-
-    /** Round icon-only button (40dp touch target), in the accent color. */
+        ui.choiceRow(title, summary, selected, enabled, onClick)
+    private fun button(text: String, icon: Int?, filled: Boolean, onClick: () -> Unit) = ui.pill(text, icon, filled, onClick = onClick)
     private fun iconButton(icon: Int, description: String, outlined: Boolean = false, onClick: () -> Unit) =
-        android.widget.ImageButton(this).apply {
-            setImageResource(icon); imageTintList = ColorStateList.valueOf(th.accent)
-            scaleType = android.widget.ImageView.ScaleType.CENTER
-            val mask = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(-1) }
-            background = android.graphics.drawable.RippleDrawable(ColorStateList.valueOf(ripple(th.accent)),
-                if (outlined) GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(1), th.accent) } else null, mask)
-            contentDescription = description
-            setOnClickListener { onClick() }
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
-        }
+        ui.iconButton(icon, description, outlined, onClick = onClick)
+    private fun switch(title: String, on: Boolean, hint: String?, onChange: (Boolean) -> Unit) = ui.switchRow(title, on, hint, onChange)
+    private fun chips(options: List<Pair<String, String>>, selected: String?, onPick: (String) -> Unit) =
+        ui.chips(options, selected, onPick = onPick)
 
-    /** Labeled slider with live value and its default; [onChange] fires on release. */
+    /** Labeled slider with live value and its default, added to this card; [onChange] fires on release. */
     private fun LinearLayout.slider(
         title: String, min: Float, max: Float, step: Float, value: Float, default: Float,
         format: (Float) -> String, hint: String? = null, live: ((Float) -> Unit)? = null, onChange: (Float) -> Unit,
-    ): View {
-        // reaches into the card padding like the rows, so the seek bar's thumb lines up with the text at both ends
-        val box = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, dp(4)) }
-        val valueView = TextView(this@SettingsActivity).apply { textSize = 14f; setTextColor(th.accent); typeface = Typeface.DEFAULT_BOLD }
-        box.addView(LinearLayout(this@SettingsActivity).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(ROW_INSET), 0, dp(ROW_INSET), 0)
-            addView(TextView(this@SettingsActivity).apply { text = title; textSize = 15f; setTextColor(th.text) },
-                LinearLayout.LayoutParams(0, -2, 1f))
-            addView(valueView)
-        })
-        val steps = ((max - min) / step).toInt()
-        fun at(p: Int) = min + p * step
-        valueView.text = format(value)
-        fun idx(v: Float) = Math.round((v - min) / step).coerceIn(0, steps)
-        val reset = TextView(this@SettingsActivity).apply {
-            text = "Reset"; textSize = 13f; setTextColor(th.accent); gravity = Gravity.CENTER_VERTICAL
-            Icons.leading(this, R.drawable.ic_reset, th.accent, sizeDp = 16f, gapDp = 4f)
-            setPadding(dp(8), dp(4), dp(8), dp(4))
-            background = pressable()
-        }
-        val bar = SeekBar(this@SettingsActivity).apply {
-            this.max = steps
-            progress = idx(value)
-            setPadding(dp(ROW_INSET), dp(8), dp(ROW_INSET), dp(8))
-            progressTintList = ColorStateList.valueOf(th.accent)
-            thumbTintList = ColorStateList.valueOf(th.accent)
-            progressBackgroundTintList = ColorStateList.valueOf(th.dim)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                    valueView.text = format(at(p))
-                    live?.invoke(at(p))
-                    reset.visibility = if (p == idx(default)) View.INVISIBLE else View.VISIBLE
-                }
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) { touched = box; onChange(at(sb.progress)) }
-            })
-        }
-        box.addView(bar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
-        reset.visibility = if (idx(value) == idx(default)) View.INVISIBLE else View.VISIBLE
-        reset.setOnClickListener { touched = box; bar.progress = idx(default); onChange(default) }
-        box.addView(LinearLayout(this@SettingsActivity).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(ROW_INSET), 0, dp(ROW_INSET - 8), 0)
-            addView(TextView(this@SettingsActivity).apply { text = "Default: ${format(default)}"; textSize = 12.5f; setTextColor(th.dim) },
-                LinearLayout.LayoutParams(0, -2, 1f))
-            addView(reset)
-        })
-        hint?.let { box.addView(hintView(it).apply { setPadding(dp(ROW_INSET), dp(2), dp(ROW_INSET), dp(6)) }) }
-        addView(box, insetParams())
-        return box
-    }
-
-    private fun switch(title: String, on: Boolean, hint: String?, onChange: (Boolean) -> Unit): View =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(0, dp(10), 0, dp(4))
-            addView(Switch(this@SettingsActivity).apply {
-                text = title; textSize = 15f; setTextColor(th.text); isChecked = on
-                minHeight = dp(40)
-                thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(th.accent, th.dim))
-                trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(th.highlight, th.bg))
-                setOnCheckedChangeListener { _, v -> touched = this@apply; onChange(v) }
-            })
-            hint?.let { addView(hintView(it)) }
-        }
-
-    /** Segmented choice: equal-width pills, the selected one filled. */
-    private fun chips(options: List<Pair<String, String>>, selected: String?, onPick: (String) -> Unit): View =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            // chips line up by their box, not their text baseline (a 2-line chip was pushed down and cut off)
-            isBaselineAligned = false
-            setPadding(0, 0, 0, dp(4))
-            val group = this
-            val views = ArrayList<TextView>()
-            fun paint(sel: String) = views.forEach { v ->
-                val on = v.tag == sel
-                v.setTextColor(if (on) th.onAccent else th.text)
-                v.background = GradientDrawable().apply {
-                    cornerRadius = dp(18).toFloat()
-                    if (on) setColor(th.accent) else setStroke(dp(1), Themes.mix(th.bar, th.dim, 0.7f))
-                }
-            }
-            options.forEachIndexed { i, (name, value) ->
-                addView(TextView(this@SettingsActivity).apply {
-                    text = name; tag = value; textSize = 14f; gravity = Gravity.CENTER
-                    minHeight = dp(38)
-                    setPadding(dp(8), dp(8), dp(8), dp(8))
-                    // one line: shrink a long label ("One sentence") to fit its share of the row instead of wrapping
-                    isSingleLine = true
-                    setAutoSizeTextTypeUniformWithConfiguration(10, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
-                    if (value == "serif" || value == "sans" || value == "literata") typeface = Ui.bookFont(this@SettingsActivity, value)
-                    setOnClickListener { touched = group; onPick(value); paint(value) }
-                    views += this
-                }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i < options.size - 1) marginEnd = dp(8) })
-            }
-            paint(selected ?: "")
-        }
+    ): View = ui.slider(title, min, max, step, value, default, format, hint, live, onChange).also { addView(it) }
 }
