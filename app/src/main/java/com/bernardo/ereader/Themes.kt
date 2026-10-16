@@ -125,16 +125,19 @@ object Themes {
     fun paperTexture(ctx: Context) = BookStore.prefs(ctx).getBoolean("paper_texture", false)
 
     private var paperCache: Pair<Int, android.graphics.Bitmap>? = null
+    /** The texture's light and shade as signed deviations from its mean, one byte per pixel (128 = flat). */
+    private var paperRelief: ByteArray? = null
+    private var paperSide = 0
 
     /**
-     * The page background: the theme color, or (with the paper option on) that color with a soft, tiling paper
-     * grain: gentle blotches, fine grain and a few faint fibers, made once per background color.
+     * The page background: the theme color, or (with the paper option on) that color carrying the relief of a real
+     * sheet of lightly crumpled paper (Paper Wrinkled 001 from 3dtextures.me, CC0), tinted once per background color.
      */
     fun pageBackground(ctx: Context, t: ReaderTheme): android.graphics.drawable.Drawable {
         if (!paperTexture(ctx)) return ColorDrawable(t.bg)
-        val bmp = paperCache?.takeIf { it.first == t.bg }?.second ?: paperBitmap(t).also { paperCache = t.bg to it }
-        // shown at 2x its pixel size so the grain reads as soft texture, not pixel noise
-        bmp.density = ctx.resources.displayMetrics.densityDpi / 2
+        val bmp = paperCache?.takeIf { it.first == t.bg }?.second ?: paperBitmap(ctx, t).also { paperCache = t.bg to it }
+        // one texture pixel per screen pixel: a 1024 px tile is about a screen wide, so creases span the page
+        bmp.density = ctx.resources.displayMetrics.densityDpi
         // no intrinsic size: a view takes its background's size as its minimum, which made the reader's top bar as tall
         // as the tile (a big blank band over the start of the chapter)
         return object : android.graphics.drawable.BitmapDrawable(ctx.resources, bmp) {
@@ -147,74 +150,49 @@ object Themes {
     }
 
     /**
-     * Lightly crumpled paper: a few dozen flat facets, each tilted its own way and lit from the top left, meeting at
-     * faint creases (a ridge with a bright and a shadowed side), over a soft cloud of lighter and darker patches and a
-     * fine tooth. All of it stays within a few percent of the page color. Seamless tile; the same relief on dark themes,
-     * a little quieter.
+     * The photographed sheet reduced to its relief: luminance minus the mean. It's a ruled notebook page, so the blue
+     * lines are painted over with the paper just above and below them, leaving only the creases and grain.
      */
-    private fun paperBitmap(t: ReaderTheme): android.graphics.Bitmap {
-        val n = 512
-        val rnd = java.util.Random(7)
-        // smooth value noise that wraps at the tile edge (cells divides n), so tiles join without seams
-        fun layer(cells: Int): FloatArray {
-            val g = FloatArray(cells * cells) { rnd.nextFloat() * 2 - 1 }
-            val out = FloatArray(n * n)
-            val step = n / cells.toFloat()
-            for (y in 0 until n) for (x in 0 until n) {
-                val gx = x / step; val gy = y / step
-                val x0 = gx.toInt(); val y0 = gy.toInt()
-                val fx = gx - x0; val fy = gy - y0
-                val sx = fx * fx * (3 - 2 * fx); val sy = fy * fy * (3 - 2 * fy)
-                fun at(i: Int, j: Int) = g[(j % cells) * cells + (i % cells)]
-                val top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * sx
-                val bottom = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * sx
-                out[y * n + x] = top + (bottom - top) * sy
-            }
-            return out
+    private fun paperRelief(ctx: Context): ByteArray {
+        paperRelief?.let { return it }
+        val opts = android.graphics.BitmapFactory.Options().apply { inScaled = false }
+        val src = android.graphics.BitmapFactory.decodeResource(ctx.resources, R.drawable.paper_wrinkled, opts)
+        val n = src.width
+        val px = IntArray(n * n).also { src.getPixels(it, 0, n, 0, 0, n, n) }
+        src.recycle()
+        val lum = FloatArray(n * n)
+        val line = BooleanArray(n * n)
+        for (i in px.indices) {
+            val r = (px[i] shr 16) and 0xFF; val g = (px[i] shr 8) and 0xFF; val b = px[i] and 0xFF
+            lum[i] = 0.299f * r + 0.587f * g + 0.114f * b
+            line[i] = b - (r + g) / 2 > 14
         }
-        // facets: a jittered grid of seed points (wrapping), each with its own tilt and height
-        val cells = 6
-        val cs = n / cells.toFloat()
-        val seedX = FloatArray(cells * cells); val seedY = FloatArray(cells * cells)
-        val tiltX = FloatArray(cells * cells); val tiltY = FloatArray(cells * cells); val lift = FloatArray(cells * cells)
-        for (j in 0 until cells) for (i in 0 until cells) {
-            val k = j * cells + i
-            seedX[k] = (i + 0.15f + rnd.nextFloat() * 0.7f) * cs
-            seedY[k] = (j + 0.15f + rnd.nextFloat() * 0.7f) * cs
-            tiltX[k] = (rnd.nextFloat() - 0.5f) * 2f; tiltY[k] = (rnd.nextFloat() - 0.5f) * 2f
-            lift[k] = (rnd.nextFloat() - 0.5f) * 2f
-        }
-        val cloud = layer(4); val mid = layer(16); val fine = layer(128)
-        // the relief: facet planes, ridges where two facets meet, soft cloudiness
-        val h = FloatArray(n * n)
-        for (y in 0 until n) for (x in 0 until n) {
-            val ci = (x / cs).toInt(); val cj = (y / cs).toInt()
-            var d1 = Float.MAX_VALUE; var d2 = Float.MAX_VALUE; var k1 = 0; var sx1 = 0f; var sy1 = 0f
-            for (dj in -1..1) for (di in -1..1) {
-                val ii = Math.floorMod(ci + di, cells); val jj = Math.floorMod(cj + dj, cells)
-                val k = jj * cells + ii
-                val sx = seedX[k] + (if (ci + di < 0) -n else if (ci + di >= cells) n else 0)
-                val sy = seedY[k] + (if (cj + dj < 0) -n else if (cj + dj >= cells) n else 0)
-                val dx = x - sx; val dy = y - sy
-                val d = kotlin.math.sqrt(dx * dx + dy * dy)
-                if (d < d1) { d2 = d1; d1 = d; k1 = k; sx1 = sx; sy1 = sy } else if (d < d2) d2 = d
-            }
-            val facet = lift[k1] * 2.5f + (tiltX[k1] * (x - sx1) + tiltY[k1] * (y - sy1)) * 0.06f
-            val crease = (1f - (d2 - d1) / 6f).coerceAtLeast(0f)
-            h[y * n + x] = facet + crease * crease * 3.5f + cloud[y * n + x] * 2.5f + mid[y * n + x] * 0.8f
-        }
-        // shade from the slope, lit from the top left; plus the fine tooth of the paper
-        val base = if (t.light) mix(t.bg, 0xFFE4D9C6.toInt(), 0.06f) else mix(t.bg, 0xFF6B6255.toInt(), 0.03f)
-        val amp = if (t.light) 0.085f else 0.06f
-        val px = IntArray(n * n)
-        val r0 = (base shr 16) and 0xFF; val g0 = (base shr 8) and 0xFF; val b0 = base and 0xFF
         for (y in 0 until n) for (x in 0 until n) {
             val i = y * n + x
-            val gx = h[y * n + (x + 1) % n] - h[y * n + (x + n - 1) % n]
-            val gy = h[((y + 1) % n) * n + x] - h[((y + n - 1) % n) * n + x]
-            val shade = (-gx * 0.7f - gy * 0.7f).coerceIn(-3f, 3f) / 3f
-            val v = (shade * 0.8f + fine[i] * 0.22f + (rnd.nextFloat() * 2 - 1) * 0.08f) * amp
-            fun ch(c: Int) = (c + v * (if (t.light) c else 255 - c + 40)).toInt().coerceIn(0, 255)
+            if (!line[i]) continue
+            // nearest unlined rows above and below (the lines are a few pixels thick)
+            var up = y; var down = y
+            while (up > 0 && line[up * n + x]) up--
+            while (down < n - 1 && line[down * n + x]) down++
+            lum[i] = (lum[up * n + x] + lum[down * n + x]) / 2
+        }
+        val mean = lum.average().toFloat()
+        val out = ByteArray(n * n) { i -> (lum[i] - mean).toInt().coerceIn(-127, 127).toByte() }
+        paperRelief = out
+        paperSide = n
+        return out
+    }
+
+    private fun paperBitmap(ctx: Context, t: ReaderTheme): android.graphics.Bitmap {
+        val relief = paperRelief(ctx)
+        val n = paperSide
+        val r0 = (t.bg shr 16) and 0xFF; val g0 = (t.bg shr 8) and 0xFF; val b0 = t.bg and 0xFF
+        // light pages: the creases darken and lighten the color itself; dark pages: a faint lift toward light, so the
+        // relief shows without the page going grey
+        val px = IntArray(n * n)
+        for (i in px.indices) {
+            val f = relief[i] / 255f
+            fun ch(c: Int) = (if (t.light) c + f * c * 1.25f else c + f * (255 - c + 40) * 0.55f).toInt().coerceIn(0, 255)
             px[i] = (0xFF shl 24) or (ch(r0) shl 16) or (ch(g0) shl 8) or ch(b0)
         }
         return android.graphics.Bitmap.createBitmap(px, n, n, android.graphics.Bitmap.Config.ARGB_8888)

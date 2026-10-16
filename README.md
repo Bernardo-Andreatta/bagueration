@@ -50,6 +50,7 @@ Requirements: JDK 17, Android SDK 35, Python 3 (for the blend step), about 1 GB 
 - [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) by hexgrad, Apache-2.0.
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) by k2-fsa, Apache-2.0. It runs the voices on the device and hosts the downloadable [Piper](https://github.com/rhasspy/piper) voices, each under its own license.
 - [PdfBox-Android](https://github.com/TomRoush/PdfBox-Android) and [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/), Apache-2.0.
+- Paper texture: [Paper Wrinkled 001](https://3dtextures.me/2021/03/22/paper-wrinkled-001/) by 3dtextures.me, CC0 (its ruled lines are removed at load time).
 
 ## License
 
