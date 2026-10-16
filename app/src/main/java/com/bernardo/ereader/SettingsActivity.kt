@@ -43,15 +43,32 @@ class SettingsActivity : Activity() {
     private var previewButton: TextView? = null
     private val previewWatch = object : Runnable {
         override fun run() {
-            if (narrator?.isPreviewing == true) previewButton?.postDelayed(this, 300) else showPreviewState(false)
+            if (narrator?.isPreviewing == true) { showPreviewState(true); previewButton?.postDelayed(this, 300) } else showPreviewState(false)
         }
     }
 
-    /** The sample button reads "Play sample" or "Stop", with the matching icon. */
+    /** Bouncing dots on the sample button while the voice is still being prepared. */
+    private var sampleDots: BouncingDots? = null
+    private var sampleState = ""
+
+    /** The sample button reads "Play sample" or "Stop" (with the dots while loading), with the matching icon. */
     private fun showPreviewState(playing: Boolean) {
         val b = previewButton ?: return
+        val loading = playing && narrator?.previewLoading == true
+        val state = if (loading) "loading" else if (playing) "stop" else "play"
+        if (state == sampleState) return
+        sampleState = state
         b.text = if (playing) "Stop" else "Play sample"
-        Icons.leading(b, if (playing) R.drawable.ic_stop else R.drawable.ic_play, th.onAccent)
+        if (loading) {
+            val dots = sampleDots ?: BouncingDots(th.onAccent, d).also { sampleDots = it }
+            dots.setBounds(0, 0, dp(18), dp(18))
+            b.setCompoundDrawablesRelative(dots, null, null, null)
+            b.compoundDrawablePadding = dp(8)
+            dots.start()
+        } else {
+            sampleDots?.stop()
+            Icons.leading(b, if (playing) R.drawable.ic_stop else R.drawable.ic_play, th.onAccent)
+        }
     }
 
     /**
@@ -389,10 +406,18 @@ class SettingsActivity : Activity() {
         addView(android.widget.HorizontalScrollView(this@SettingsActivity).apply {
             isHorizontalScrollBarEnabled = false
             clipToPadding = false
+            isHorizontalFadingEdgeEnabled = true
+            setFadingEdgeLength(dp(28))
             addView(themeRow)
             post {
-                val sel = Themes.all.indexOfFirst { it.id == th.id }.let { if (it < 0) Themes.all.size else it }
-                themeRow.getChildAt(sel)?.let { v -> scrollTo((v.left - width / 2 + v.width / 2).coerceAtLeast(0), 0) }
+                // size the circles so that four and a half fit: the half one at the edge says there's more to scroll
+                val itemW = (width / 4.5f).toInt()
+                for (i in 0 until themeRow.childCount) themeRow.getChildAt(i).layoutParams = LinearLayout.LayoutParams(itemW, -2)
+                themeRow.requestLayout()
+                post {
+                    val sel = Themes.all.indexOfFirst { it.id == th.id }.let { if (it < 0) Themes.all.size else it }
+                    themeRow.getChildAt(sel)?.let { v -> scrollTo((v.left - width / 2 + v.width / 2).coerceAtLeast(0), 0) }
+                }
             }
         }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6); marginStart = -dp(ROW_INSET); marginEnd = -dp(ROW_INSET) })
 
@@ -451,7 +476,7 @@ class SettingsActivity : Activity() {
         }
         addView(justifyRow)
         lateinit var paperRow: View
-        paperRow = switch("Paper texture", Themes.paperTexture(this@SettingsActivity), "Recycled paper behind the page: soft grain, tiny flecks and fibers.") { on ->
+        paperRow = switch("Paper texture", Themes.paperTexture(this@SettingsActivity), "Lightly crumpled paper behind the page: soft grain and faint creases.") { on ->
             prefs.edit().putBoolean("paper_texture", on).apply(); keepInPlace(paperRow) { refreshSample() }
         }
         addView(paperRow)
@@ -661,16 +686,30 @@ class SettingsActivity : Activity() {
         // one preview at a time; the playing row shows a pause button
         val previewButtons = HashMap<String, android.widget.ImageButton>()
         var previewingId: String? = null
+        // the row whose sample is being prepared shows three bouncing dots, then a stop button once it plays
+        val dots = BouncingDots(th.accent, d)
+        val buttonState = HashMap<String, String>()
         fun refreshButtons() {
             val playing = if (narrator?.isPreviewing == true) previewingId else null
+            val loading = narrator?.previewLoading == true
             for ((id, b) in previewButtons) {
                 val v = Voices.byId(id) ?: continue
-                b.setImageResource(when {
-                    id == playing -> R.drawable.ic_pause
-                    Voices.isInstalled(this, v) -> R.drawable.ic_play
-                    else -> R.drawable.ic_download
-                })
+                val state = when {
+                    id == playing && loading -> "loading"
+                    id == playing -> "stop"
+                    Voices.isInstalled(this, v) -> "play"
+                    else -> "download"
+                }
+                if (buttonState[id] == state) continue
+                buttonState[id] = state
+                when (state) {
+                    "loading" -> { b.setImageDrawable(dots); dots.start() }
+                    "stop" -> b.setImageDrawable(Icons.get(this, R.drawable.ic_stop, th.accent, 24f))
+                    "play" -> b.setImageDrawable(Icons.get(this, R.drawable.ic_play, th.accent, 24f))
+                    else -> b.setImageDrawable(Icons.get(this, R.drawable.ic_download, th.accent, 24f))
+                }
             }
+            if (playing == null || !loading) dots.stop()
         }
         val watcher = object : Runnable {
             override fun run() {

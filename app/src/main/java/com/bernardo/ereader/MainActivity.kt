@@ -944,7 +944,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                      else {
                          val here = chapterAt(pages[page])
                          book.chapters.forEachIndexed { i, c ->
-                             val r = row("${i + 1}.  ${c.title}", null, chapterLength(i), i == here, null) { jump(c.start) }
+                             val r = row(c.displayName(i), null, chapterLength(i), i == here, null) { jump(c.start) }
                              if (i == here) currentRow = r
                              listBox.addView(r)
                          }
@@ -1070,10 +1070,29 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         return pages[page] + layout.getLineStart(line)
     }
 
+    /**
+     * How much of the scroll view's top and bottom is covered: the top bar (status bar + row, or just the status
+     * strip once it slid away) and the player (or the navigation bar once it slid away). The text runs under both.
+     */
+    private fun coverTop(): Int {
+        val d = resources.displayMetrics.density
+        return if (fullscreen) 0 else bars.top + (if (barsHidden) 2 * d else 58 * d).toInt()
+    }
+
+    private fun coverBottom(): Int = when {
+        fullscreen -> 0
+        barsHidden -> bars.bottom
+        else -> controls.height.takeIf { it > 0 } ?: (bars.bottom + (114 * resources.displayMetrics.density).toInt())
+    }
+
+    /** The part of the page you can actually see, in scroll coordinates: [first, last]. */
+    private fun visibleWindow(): IntRange = (scroll.scrollY + coverTop())..(scroll.scrollY + scroll.height - coverBottom())
+
     private fun visibleRange(): IntRange {
         val layout = pageView.layout ?: return pages[page] until pageEnd(page)
-        val top = layout.getLineForVertical((scroll.scrollY - pageView.paddingTop).coerceAtLeast(0))
-        val bottom = layout.getLineForVertical(scroll.scrollY + scroll.height - pageView.paddingTop)
+        val win = visibleWindow()
+        val top = layout.getLineForVertical((win.first - pageView.paddingTop).coerceAtLeast(0))
+        val bottom = layout.getLineForVertical((win.last - pageView.paddingTop).coerceAtLeast(0))
         return (pages[page] + layout.getLineStart(top)) until (pages[page] + layout.getLineEnd(bottom))
     }
 
@@ -1096,8 +1115,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             val local = (offset - pages[page]).coerceIn(0, pageView.text.length)
             val y = layout.getLineTop(layout.getLineForOffset(local)) + pageView.paddingTop
             if (force) scroll.scrollTo(0, (y - pageView.paddingTop).coerceAtLeast(0))
-            else if (y < scroll.scrollY || y > scroll.scrollY + scroll.height * 0.75) {
-                scroll.smoothScrollTo(0, (y - scroll.height / 4).coerceAtLeast(0))
+            else {
+                val win = visibleWindow()
+                val vh = win.last - win.first
+                if (y < win.first || y > win.first + vh * 0.75) {
+                    scroll.smoothScrollTo(0, (y - coverTop() - vh / 4).coerceAtLeast(0))
+                }
             }
         }
     }
@@ -1198,7 +1221,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         bufferPill.removeCallbacks(showBufferPill)
         if (show) {
             bufferPill.text = msg
-            if (bufferPill.visibility != View.VISIBLE) bufferPill.postDelayed(showBufferPill, 2000)
+            // together with the player's own "Preparing voice…" label, not two seconds after it
+            if (bufferPill.visibility != View.VISIBLE) bufferPill.postDelayed(showBufferPill, 250)
         } else bufferPill.visibility = View.GONE
         playBtn.contentDescription = if (show) "$msg Stop reading" else if (narrator.isPlaying) "Stop reading" else "Read aloud"
         if (show) pageLabel.text = msg
@@ -1237,13 +1261,14 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             val b = (end - pages[page] - 1).coerceIn(a, pageView.text.length)
             val top = layout.getLineTop(layout.getLineForOffset(a)) + pageView.paddingTop
             val bottom = layout.getLineBottom(layout.getLineForOffset(b)) + pageView.paddingTop
-            val viewTop = scroll.scrollY
-            val viewBottom = viewTop + scroll.height
-            if (top < viewTop || bottom > viewBottom || top > viewTop + scroll.height * 0.75) {
-                // a sentence taller than the screen starts at the top; otherwise a quarter of the way down
-                val lead = if (bottom - top > scroll.height * 0.7) 0 else scroll.height / 4
+            // only the part not under the top bar or the player counts as visible
+            val win = visibleWindow()
+            val vh = win.last - win.first
+            if (top < win.first || bottom > win.last || top > win.first + vh * 0.75) {
+                // a sentence taller than the visible part starts at its top; otherwise a quarter of the way down
+                val lead = if (bottom - top > vh * 0.7) 0 else vh / 4
                 lastAutoScroll = android.os.SystemClock.uptimeMillis()
-                scroll.smoothScrollTo(0, (top - lead).coerceAtLeast(0))
+                scroll.smoothScrollTo(0, (top - coverTop() - lead).coerceAtLeast(0))
             }
         }
     }
@@ -1260,9 +1285,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val line = layout.getLineForOffset(a)
         val top = layout.getLineTop(line) + pageView.paddingTop
         val bottom = layout.getLineBottom(line) + pageView.paddingTop
-        if (bottom > scroll.scrollY + scroll.height || top < scroll.scrollY) {
+        val win = visibleWindow()
+        if (bottom > win.last || top < win.first) {
             lastAutoScroll = now
-            scroll.smoothScrollTo(0, (top - scroll.height / 3).coerceAtLeast(0))
+            scroll.smoothScrollTo(0, (top - coverTop() - (win.last - win.first) / 3).coerceAtLeast(0))
         }
     }
 

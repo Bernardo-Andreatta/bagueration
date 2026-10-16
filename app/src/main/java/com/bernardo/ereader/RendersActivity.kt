@@ -353,7 +353,12 @@ class RendersActivity : Activity() {
             while (to < bookText.length && msFor(to - from) < wantMs) to = (bookText.indexOf("\n\n", to + 1).takeIf { it > 0 } ?: bookText.length)
             return from to minOf(bookText.length, to)
         }
-        fun chapterName(i: Int) = "${i + 1}. ${chapters[i].title}"
+        fun chapterName(i: Int) = chapters[i].displayName(i)
+        /** Short form for the file's name: the chapter's own number if it has one, else its place in the book. */
+        fun chapterShort(i: Int): String {
+            val t = chapters[i].title.trim()
+            return if (t.length <= 24) t else Regex("^\\S+(?:\\s+\\S+)?").find(t)?.value ?: "Chapter ${i + 1}"
+        }
 
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), 0) }
         val fromRow = pickerRow("Start at")
@@ -362,6 +367,8 @@ class RendersActivity : Activity() {
         val makeLine = infoLine(R.drawable.ic_hourglass, th.dim)
         val lengthChips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
 
+        val presets = listOf("Chapters" to 0, "30 min" to 30, "1 h" to 60, "2 h" to 120, "4 h" to 240)
+        lateinit var otherChip: TextView
         fun update() {
             if (toIdx < fromIdx) toIdx = fromIdx
             fromRow.value.text = chapterName(fromIdx)
@@ -372,8 +379,11 @@ class RendersActivity : Activity() {
             val rtf = Narrator.instance?.currentRtf ?: 0.7
             audioLine.text = "About ${RenderManager.formatDuration(audio)} of audio · ${audio / 60_000 / 2 + 1} MB"
             makeLine.text = "Takes about ${RenderManager.formatDuration((audio * rtf).toLong())} to make on this phone"
+            // a typed-in length lights the "Other" chip and shows there
+            val custom = lengthMin > 0 && presets.none { it.second == lengthMin }
+            otherChip.text = if (custom) RenderManager.formatDuration(lengthMin * 60_000L) else "Other…"
             for (i in 0 until lengthChips.childCount) (lengthChips.getChildAt(i) as TextView).let { c ->
-                val on = c.tag == lengthMin
+                val on = c.tag == lengthMin || (custom && c.tag == -1)
                 c.setTextColor(if (on) th.onAccent else th.text)
                 c.typeface = if (on) medium else Typeface.DEFAULT
                 c.background = RippleDrawable(ui.ripple(th.accent), if (on) ui.rounded(th.accent, 20) else ui.rounded(null, 20, th.outline),
@@ -393,12 +403,33 @@ class RendersActivity : Activity() {
                 .setSingleChoiceItems(chapters.indices.drop(fromIdx).map(::chapterName).toTypedArray(), toIdx - fromIdx) { dd, i -> toIdx = fromIdx + i; dd.dismiss(); update() }
                 .setNegativeButton("Close", null).show()
         }
-        for ((label, min) in listOf("Chapters" to 0, "30 min" to 30, "1 h" to 60, "2 h" to 120, "4 h" to 240)) lengthChips.addView(TextView(this).apply {
+        /** Any length: a number of minutes typed in; the "Other" chip then shows it. */
+        fun pickLength() {
+            val input = android.widget.EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                hint = "Minutes"; textSize = 18f; gravity = Gravity.CENTER
+                setTextColor(th.text); setHintTextColor(th.dim)
+                backgroundTintList = ColorStateList.valueOf(th.accent)
+                if (lengthMin > 0 && presets.none { it.second == lengthMin }) { setText(lengthMin.toString()); setSelection(text.length) }
+                filters = arrayOf(android.text.InputFilter.LengthFilter(4))
+            }
+            val holder = LinearLayout(this).apply { setPadding(dp(24), dp(8), dp(24), 0); addView(input, LinearLayout.LayoutParams(-1, -2)) }
+            val dlg = Themes.dialog(this).setTitle("Length of audio").setView(holder)
+                .setPositiveButton("Use") { _, _ ->
+                    input.text.toString().toIntOrNull()?.takeIf { it > 0 }?.let { lengthMin = it.coerceAtMost(1440); update() }
+                }
+                .setNegativeButton("Cancel", null).create()
+            dlg.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+            dlg.show()
+            input.requestFocus()
+        }
+        for ((label, min) in presets + ("Other…" to -1)) lengthChips.addView(TextView(this).apply {
             text = label; tag = min; textSize = 12.5f; gravity = Gravity.CENTER; maxLines = 1
             minHeight = dp(44)
             setPadding(dp(4), dp(8), dp(4), dp(8))
-            setOnClickListener { lengthMin = min; update() }
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = if (min == 240) 0 else dp(6) })
+            setOnClickListener { if (min < 0) pickLength() else { lengthMin = min; update() } }
+            if (min < 0) otherChip = this
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = if (min < 0) 0 else dp(6) })
 
         box.addView(fromRow.view)
         box.addView(toRow.view, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
@@ -422,9 +453,9 @@ class RendersActivity : Activity() {
         fun make() {
             val (from, to) = range()
             val label = when {
-                lengthMin > 0 -> "Chapter ${fromIdx + 1} · ${RenderManager.formatDuration(lengthMin * 60_000L)}"
-                fromIdx == toIdx -> "Chapter ${fromIdx + 1}"
-                else -> "Chapters ${fromIdx + 1}–${toIdx + 1}"
+                lengthMin > 0 -> "${chapterShort(fromIdx)} · ${RenderManager.formatDuration(lengthMin * 60_000L)}"
+                fromIdx == toIdx -> chapterShort(fromIdx)
+                else -> "${chapterShort(fromIdx)} – ${chapterShort(toIdx)}"
             }
             val settings = preset.serialize() + "|" + phrasing
             val r = Render("r" + System.currentTimeMillis(), bookId, from, to, label, voice.id, settings, "processing", 0, System.currentTimeMillis())

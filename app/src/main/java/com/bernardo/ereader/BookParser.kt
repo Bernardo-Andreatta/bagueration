@@ -14,7 +14,18 @@ import java.nio.charset.Charset
 import java.util.zip.ZipFile
 
 /** A chapter heading lives at [start, headEnd) in the book text. */
-class Chapter(val title: String, val start: Int, val headEnd: Int)
+class Chapter(val title: String, val start: Int, val headEnd: Int) {
+    /**
+     * The title as shown in lists: numbered by its place in the book ("12. The Long Night"), unless it already
+     * carries a number of its own ("270", "Chapter XII", "Capítulo 3"), which is then left alone.
+     */
+    fun displayName(index: Int): String =
+        if (NUMBERED.containsMatchIn(title)) title else "${index + 1}. $title"
+
+    private companion object {
+        val NUMBERED = Regex("^\\s*(?:\\d|[IVXLC]+\\b|(?:chapter|capítulo|capitulo|capítol|chapitre|capitolo|kapitel|part|parte|partie|book|livro|libro|livre)\\b)", RegexOption.IGNORE_CASE)
+    }
+}
 
 /**
  * Plain book text + chapter list + inline styles.

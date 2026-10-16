@@ -299,10 +299,16 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     fun preview(text: String, withVoice: String? = null) {
         stop()
         stopPrefetch()
+        previewLoading = true
         session = Session(text, 0, true, withVoice).also { it.begin() }
     }
 
+    /** A sample was asked for and nothing has come out yet (model loading, first sentence being made). */
+    @Volatile var previewLoading = false
+        private set
+
     fun stop() {
+        previewLoading = false
         session?.cancel()
         session = null
         filePlayer?.release()
@@ -1282,7 +1288,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         if (b == shown.second && a > shown.first) return
                         shown = a to b
                         playingStart = a
-                        if (!preview) main.post { if (!cancelled) listener.onSentence(a, b) }
+                        if (preview) previewLoading = false
+                        else main.post { if (!cancelled) listener.onSentence(a, b) }
                     }
                     // write in slices so stop() takes effect quickly
                     ph.begin(c, written)

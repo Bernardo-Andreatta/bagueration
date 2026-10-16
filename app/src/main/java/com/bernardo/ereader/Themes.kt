@@ -147,13 +147,14 @@ object Themes {
     }
 
     /**
-     * Recycled paper: a slightly greyer, oatmeal stock with cloudy mottling, a sprinkle of tiny flecks (mostly brown-grey,
-     * a few ink blue / red from the paper it was made from) and short fibers. Seamless tile; dark themes get dark
-     * flecks (light ones read as stars there).
+     * Lightly crumpled paper: a few dozen flat facets, each tilted its own way and lit from the top left, meeting at
+     * faint creases (a ridge with a bright and a shadowed side), over a soft cloud of lighter and darker patches and a
+     * fine tooth. All of it stays within a few percent of the page color. Seamless tile; the same relief on dark themes,
+     * a little quieter.
      */
     private fun paperBitmap(t: ReaderTheme): android.graphics.Bitmap {
-        val n = 384
-        val rnd = java.util.Random(11)
+        val n = 512
+        val rnd = java.util.Random(7)
         // smooth value noise that wraps at the tile edge (cells divides n), so tiles join without seams
         fun layer(cells: Int): FloatArray {
             val g = FloatArray(cells * cells) { rnd.nextFloat() * 2 - 1 }
@@ -171,63 +172,52 @@ object Themes {
             }
             return out
         }
-        val base = if (t.light) mix(t.bg, 0xFFC9BFAE.toInt(), 0.10f) else mix(t.bg, 0xFF6B6255.toInt(), 0.04f)
-        val cloud = layer(3); val mottle = layer(8); val mid = layer(24); val fine = layer(96)
-        // light paper darkens in the grain; dark themes lighten a touch (less, or it looks dusty)
-        val amp = if (t.light) 0.075f else 0.045f
+        // facets: a jittered grid of seed points (wrapping), each with its own tilt and height
+        val cells = 6
+        val cs = n / cells.toFloat()
+        val seedX = FloatArray(cells * cells); val seedY = FloatArray(cells * cells)
+        val tiltX = FloatArray(cells * cells); val tiltY = FloatArray(cells * cells); val lift = FloatArray(cells * cells)
+        for (j in 0 until cells) for (i in 0 until cells) {
+            val k = j * cells + i
+            seedX[k] = (i + 0.15f + rnd.nextFloat() * 0.7f) * cs
+            seedY[k] = (j + 0.15f + rnd.nextFloat() * 0.7f) * cs
+            tiltX[k] = (rnd.nextFloat() - 0.5f) * 2f; tiltY[k] = (rnd.nextFloat() - 0.5f) * 2f
+            lift[k] = (rnd.nextFloat() - 0.5f) * 2f
+        }
+        val cloud = layer(4); val mid = layer(16); val fine = layer(128)
+        // the relief: facet planes, ridges where two facets meet, soft cloudiness
+        val h = FloatArray(n * n)
+        for (y in 0 until n) for (x in 0 until n) {
+            val ci = (x / cs).toInt(); val cj = (y / cs).toInt()
+            var d1 = Float.MAX_VALUE; var d2 = Float.MAX_VALUE; var k1 = 0; var sx1 = 0f; var sy1 = 0f
+            for (dj in -1..1) for (di in -1..1) {
+                val ii = Math.floorMod(ci + di, cells); val jj = Math.floorMod(cj + dj, cells)
+                val k = jj * cells + ii
+                val sx = seedX[k] + (if (ci + di < 0) -n else if (ci + di >= cells) n else 0)
+                val sy = seedY[k] + (if (cj + dj < 0) -n else if (cj + dj >= cells) n else 0)
+                val dx = x - sx; val dy = y - sy
+                val d = kotlin.math.sqrt(dx * dx + dy * dy)
+                if (d < d1) { d2 = d1; d1 = d; k1 = k; sx1 = sx; sy1 = sy } else if (d < d2) d2 = d
+            }
+            val facet = lift[k1] * 2.5f + (tiltX[k1] * (x - sx1) + tiltY[k1] * (y - sy1)) * 0.06f
+            val crease = (1f - (d2 - d1) / 6f).coerceAtLeast(0f)
+            h[y * n + x] = facet + crease * crease * 3.5f + cloud[y * n + x] * 2.5f + mid[y * n + x] * 0.8f
+        }
+        // shade from the slope, lit from the top left; plus the fine tooth of the paper
+        val base = if (t.light) mix(t.bg, 0xFFE4D9C6.toInt(), 0.06f) else mix(t.bg, 0xFF6B6255.toInt(), 0.03f)
+        val amp = if (t.light) 0.085f else 0.06f
         val px = IntArray(n * n)
         val r0 = (base shr 16) and 0xFF; val g0 = (base shr 8) and 0xFF; val b0 = base and 0xFF
-        for (i in 0 until n * n) {
-            val v = (cloud[i] * 0.35f + mottle[i] * 0.3f + mid[i] * 0.2f + fine[i] * 0.12f + (rnd.nextFloat() * 2 - 1) * 0.12f) * amp
+        for (y in 0 until n) for (x in 0 until n) {
+            val i = y * n + x
+            val gx = h[y * n + (x + 1) % n] - h[y * n + (x + n - 1) % n]
+            val gy = h[((y + 1) % n) * n + x] - h[((y + n - 1) % n) * n + x]
+            val shade = (-gx * 0.7f - gy * 0.7f).coerceIn(-3f, 3f) / 3f
+            val v = (shade * 0.8f + fine[i] * 0.22f + (rnd.nextFloat() * 2 - 1) * 0.08f) * amp
             fun ch(c: Int) = (c + v * (if (t.light) c else 255 - c + 40)).toInt().coerceIn(0, 255)
             px[i] = (0xFF shl 24) or (ch(r0) shl 16) or (ch(g0) shl 8) or ch(b0)
         }
-        val bmp = android.graphics.Bitmap.createBitmap(px, n, n, android.graphics.Bitmap.Config.ARGB_8888).copy(android.graphics.Bitmap.Config.ARGB_8888, true)
-        val canvas = android.graphics.Canvas(bmp)
-        // drawn at the wrapped positions too, so marks crossing a tile edge join cleanly
-        fun wrapped(draw: () -> Unit) {
-            for (ox in intArrayOf(-n, 0, n)) for (oy in intArrayOf(-n, 0, n)) {
-                canvas.save(); canvas.translate(ox.toFloat(), oy.toFloat()); draw(); canvas.restore()
-            }
-        }
-        // fleck colors: brown-grey, grey, ink blue, ink red
-        val flecks = intArrayOf(0x3A3128, 0x555555, 0x3B5B8C, 0x8C3B2E)
-        fun fleck(): Int {
-            val r = rnd.nextFloat()
-            return flecks[when { r < 0.68f -> 0; r < 0.86f -> 1; r < 0.95f -> 2; else -> 3 }]
-        }
-        val dot = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
-        repeat(260) {
-            val x = rnd.nextFloat() * n; val y = rnd.nextFloat() * n
-            val r = 0.3f + Math.pow(rnd.nextFloat().toDouble(), 4.0).toFloat() * 1.1f
-            val squash = 0.6f + rnd.nextFloat() * 0.4f
-            dot.color = when {
-                t.light -> fleck() or ((16 + rnd.nextInt(34)) shl 24)
-                rnd.nextFloat() < 0.85f -> (40 + rnd.nextInt(50)) shl 24                    // black fleck
-                else -> 0xEBE4D7 or ((10 + rnd.nextInt(14)) shl 24)                        // faint light fleck
-            }
-            val oval = android.graphics.RectF(x - r, y - r * squash, x + r, y + r)
-            wrapped { canvas.drawOval(oval, dot) }
-        }
-        val fiber = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.STROKE; strokeCap = android.graphics.Paint.Cap.ROUND
-        }
-        repeat(170) {
-            val x = rnd.nextFloat() * n; val y = rnd.nextFloat() * n
-            val len = 5 + rnd.nextFloat() * 22; val a = rnd.nextFloat() * Math.PI.toFloat()
-            val bend = (rnd.nextFloat() - 0.5f) * 7f
-            val dx = kotlin.math.cos(a) * len; val dy = kotlin.math.sin(a) * len
-            val path = android.graphics.Path().apply {
-                moveTo(x, y); quadTo(x + dx / 2 - dy / len * bend * 2, y + dy / 2 + dx / len * bend * 2, x + dx, y + dy)
-            }
-            val colored = rnd.nextFloat() < 0.12f
-            val rgb = if (colored) fleck() else if (t.light) 0x28221C else 0xE6E0D6
-            val alpha = ((16 + rnd.nextInt(22)) * (if (t.light) 1f else 0.7f)).toInt() + (if (colored) 10 else 0)
-            fiber.color = rgb or (alpha shl 24)
-            fiber.strokeWidth = 0.45f + rnd.nextFloat() * 0.55f
-            wrapped { canvas.drawPath(path, fiber) }
-        }
-        return bmp
+        return android.graphics.Bitmap.createBitmap(px, n, n, android.graphics.Bitmap.Config.ARGB_8888)
     }
 
     /** Every dialog in the app goes through this, so they all follow the current theme (presets and custom). */
