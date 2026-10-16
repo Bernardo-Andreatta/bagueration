@@ -105,7 +105,7 @@ class RendersActivity : Activity() {
     private fun onHold() = Narrator.instance?.let { it.isPlaying && !it.isPreviewing && !it.isPlayingFile } == true
 
     private fun signature() = Renders.list(this, bookId).joinToString(";") { "${it.id}:${kindOf(it)}:${it.parts.size}" } +
-        "|${Renders.activeId(this, bookId)}|${RenderManager.pausing}|${onHold()}|${Background.unrestricted(this)}|${Narrator.instance?.coolingDown}"
+        "|${Renders.activeId(this, bookId)}|${RenderManager.pausing}|${onHold()}|${Background.unrestricted(this)}|${Narrator.instance?.coolingDown}|${gentle()}"
 
     private fun chapterEnd(i: Int) = if (i + 1 < chapters.size) chapters[i + 1].start else textLength
     private fun chapterName(i: Int) = if (book?.chapters.isNullOrEmpty()) chapters[i].title else chapters[i].displayName(i)
@@ -282,6 +282,9 @@ class RendersActivity : Activity() {
             box.addView(line)
         }
 
+        // how it's being made (gentle or normal), switchable while it runs
+        if (kind == Kind.MAKING || kind == Kind.QUEUED) box.addView(modeRow(), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+
         // which page it plays on
         val note = when {
             playsHere -> "Plays on the page you're on"
@@ -330,6 +333,45 @@ class RendersActivity : Activity() {
     }
 
     private fun neutral(t: Float) = Themes.mix(th.surface, th.text, t)
+
+    private fun gentle() = BookStore.prefs(this).getBoolean("render_gentle", false)
+
+    /** "Gentle · slower, keeps the phone cool" or "Normal · full speed", and a button to switch (it applies at once). */
+    private fun modeRow() = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        val on = gentle()
+        addView(TextView(this@RendersActivity).apply {
+            text = if (on) "Gentle · slower, keeps the phone cool" else "Normal · full speed, the phone gets warm"
+            textSize = 12.5f; setTextColor(th.dim); setLineSpacing(0f, 1.2f)
+            Icons.leading(this, if (on) R.drawable.ic_hourglass else R.drawable.ic_bolt, th.dim, sizeDp = 16f, gapDp = 8f)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(TextView(this@RendersActivity).apply {
+            text = if (on) "Switch to normal" else "Switch to gentle"
+            textSize = 13f; typeface = medium; setTextColor(th.accent); gravity = Gravity.CENTER
+            minHeight = dp(40); setPadding(dp(12), 0, dp(12), 0)
+            background = android.graphics.drawable.RippleDrawable(ui.ripple(th.accent), null, ui.rounded(-1, 20))
+            contentDescription = if (on) "Pre-loading is gentle. Switch to normal" else "Pre-loading is normal. Switch to gentle"
+            setOnClickListener { confirmMode(!on) }
+        }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        setPadding(0, 0, dp(2), 0)
+    }
+
+    /** Switch gentle / normal, after saying what it means for the phone's temperature and battery. */
+    private fun confirmMode(toGentle: Boolean) {
+        val (title, msg) = if (toGentle) "Switch to gentle?" to
+            "Pre-loading slows down to keep the battery under about 38 °C: about twice as long, or longer when the " +
+            "phone is warm, and it waits if it gets hot. Less heat is easier on the battery. A good choice while charging."
+        else "Switch to normal?" to
+            "Pre-loading runs at full speed, about twice as fast as gentle. The phone gets warm, often over 40 °C (more while " +
+            "charging), and uses more battery; heat wears the battery over time. If it gets too hot, it still eases off and waits."
+        Themes.dialog(this).setTitle(title).setMessage(msg)
+            .setPositiveButton(if (toGentle) "Switch to gentle" else "Switch to normal") { _, _ ->
+                BookStore.prefs(this).edit().putBoolean("render_gentle", toGentle).apply()
+                AppLog.i("Render", "pre-loading switched to ${if (toGentle) "gentle" else "normal"}")
+                render()
+            }
+            .setNegativeButton("Keep ${if (toGentle) "normal" else "gentle"}", null).show()
+    }
 
     /** The secondary actions for a file, with its details at the top. */
     private fun more(r: Render, kind: Kind, inUse: Boolean) {
