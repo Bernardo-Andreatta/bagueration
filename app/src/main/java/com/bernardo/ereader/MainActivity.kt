@@ -268,9 +268,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             commaPauseMs = prefs.getInt("comma_pause", 180)
             maxGapMs = prefs.getInt("max_gap", 90)
             phrasing = prefs.getInt("phrasing", 2)
-            // debug: adb shell am start -n com.bernardo.ereader/.MainActivity --ei threads 6
-            intent.getIntExtra("threads", -1).takeIf { it > 0 }?.let { prefs.edit().putInt("threads", it).apply() }
-            threads = prefs.getInt("threads", 4)
+            // debug: adb shell am start -n com.bernardo.ereader/.MainActivity --ei threads 6 (this run only; a value
+            // once stored this way lingered on a phone and left the voice at 2 threads, too slow to keep up)
+            prefs.edit().remove("threads").apply()
+            threads = intent.getIntExtra("threads", -1).takeIf { it > 0 } ?: 4
             init()
         }
         applyTheme()
@@ -1240,6 +1241,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         // a centered card, right away: the small pill went unnoticed and people tapped play and pause again and again
         if (show) {
             findViewById<TextView>(R.id.loadingText).text = msg
+            // a phone that can't keep up (warm, or busy): say why the waits happen and what avoids them
+            findViewById<TextView>(R.id.loadingHint).text = if (narrator.currentRtf > 1.1)
+                "The phone is slow right now (warm, or busy), so the voice is made slower than it plays. Pre-loading chapters avoids these waits."
+                else "It starts in a moment"
             if (loadingOverlay.visibility != View.VISIBLE) {
                 loadingOverlay.alpha = 0f
                 loadingOverlay.visibility = View.VISIBLE

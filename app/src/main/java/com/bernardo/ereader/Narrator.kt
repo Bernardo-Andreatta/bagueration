@@ -1351,7 +1351,10 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                         awaitQuietly(f)
                         // refill by amount of audio: first start ~3 s (no gap after a tiny "Hello!"); after running dry
                         // 8 s, or 20 s when the phone is falling behind (throttling) so it doesn't stutter repeatedly
-                        val wantMs = when { track == null -> 3_000L; rtf >= 0.95 -> 20_000L; else -> 8_000L }
+                        // a phone that makes audio slower than it plays will run dry again whatever the refill;
+                        // 20 s of refill at 1.5× cost was a 30 s silence, so the refill stays short and the stalls
+                        // short, even if they come more often
+                        val wantMs = when { track == null -> 3_000L; rtf >= 1.2 -> 12_000L; else -> 8_000L }
                         if (track != null) AppLog.i("Narrator", "refilling ${wantMs / 1000}s (rtf ${"%.2f".format(rtf)})")
                         var readyMs = durationMs(f)
                         for (next in queue.toArray()) {
