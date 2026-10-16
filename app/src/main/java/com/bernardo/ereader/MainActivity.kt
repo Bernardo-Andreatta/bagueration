@@ -88,9 +88,34 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private var tapMark = BackgroundColorSpan(0)
     private var jumpPopup: PopupWindow? = null
     private var fullscreen = false
+    private lateinit var topBar: Ui.TopBar
+    private var bars = Ui.Bars(0, 0, 0, 0)
+
+    private fun padForBars() {
+        topBar.view.setPadding(bars.left, bars.top, bars.right, 0)
+        val d = resources.displayMetrics.density
+        controls.setPadding((16 * d).toInt() + bars.left, (10 * d).toInt(), (16 * d).toInt() + bars.right, (8 * d).toInt() + bars.bottom)
+    }
+
+    /** The top bar, (re)made in the current theme: title = book, subtitle = chapter. */
+    private fun buildTopBar() {
+        val root = findViewById<LinearLayout>(R.id.root)
+        if (::topBar.isInitialized) root.removeView(topBar.view)
+        topBar = Ui(this, th).topBar(null, actions = listOf(
+            Ui.Action(R.drawable.ic_toc, "Contents") { showChapters() },
+            Ui.Action(R.drawable.ic_search, "Search") { showSearch() },
+            Ui.Action(R.drawable.ic_library, "Library") { showLibrary() },
+            Ui.Action(R.drawable.ic_fullscreen, "Full screen") { setFullscreen(true) },
+            Ui.Action(R.drawable.ic_settings, "Settings") { openSettings(null) },
+        ), background = Themes.pageBackground(this, th))
+        root.addView(topBar.view, 0)
+        if (fullscreen) topBar.view.visibility = View.GONE
+        padForBars()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Ui.edgeToEdge(this)
         setContentView(R.layout.activity_main)
         scroll = findViewById(R.id.scroll)
         pageView = findViewById(R.id.page)
@@ -130,6 +155,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         applyTheme()
         applyTypography()
+        Ui.onInsets(findViewById(R.id.root)) { b -> bars = b; padForBars() }
         NarrationService.controller = this
 
         findViewById<View>(R.id.prev).setOnClickListener { userTurnPage(page - 1) }
@@ -444,32 +470,6 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     // ---------- books ----------
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        fun icon(id: Int, order: Int, title: String, res: Int) {
-            val item = menu.add(0, id, order, title).setIcon(res)
-            item.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-            item.icon?.mutate()?.setTint(th.text)
-        }
-        icon(2, 0, "Library", R.drawable.ic_library)
-        icon(12, 1, "Search", R.drawable.ic_search)
-        icon(5, 2, "Contents", R.drawable.ic_toc)
-        icon(7, 3, "Full screen", R.drawable.ic_fullscreen)
-        icon(11, 4, "Settings", R.drawable.ic_settings)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            2 -> showLibrary()
-            5 -> showChapters()
-            7 -> setFullscreen(true)
-            8 -> openSettings(SettingsActivity.SECTION_APPEARANCE)
-            11 -> openSettings(null)
-            12 -> showSearch()
-            else -> return super.onOptionsItemSelected(item)
-        }
-        return true
-    }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -499,7 +499,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     /** "Open with" from a file manager: import into the library and open. */
     private fun importBook(uri: Uri) {
-        actionBar?.subtitle = Themes.tint("Importing…", th.dim)
+        topBar.setTitle(topBar.title.text, "Importing…")
         thread {
             try {
                 val id = BookStore.import(this, uri)
@@ -545,8 +545,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     private fun showEmpty() {
-        title = Themes.tint("bagueration2.0", th.text)
-        actionBar?.subtitle = null
+        topBar.setTitle("bagueration2.0")
         pageView.text = "No book open.\n\nOpen the Library and tap + to add one.\n\nTip: tap any sentence to start reading aloud from there."
         pageLabel.text = ""
     }
@@ -1005,9 +1004,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     /** Title = book, subtitle = current chapter. */
     private fun updateHeader() {
         val id = bookId ?: return
-        title = Themes.tint(prefs.getString("title_$id", id), th.text)
         val ch = if (pages.isNotEmpty()) book.chapters.getOrNull(chapterAt(pages[page]))?.title else null
-        actionBar?.subtitle = Themes.tint(ch, th.dim)
+        topBar.setTitle(prefs.getString("title_$id", id), ch)
     }
 
     private fun setSpeed(v: Float) {
@@ -1222,14 +1220,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             pageView.setText(styledPage(page), TextView.BufferType.SPANNABLE)
             if (narrator.isPlaying && spoken.first in pages[page] until pageEnd(page)) highlightSpoken()
             scroll.post { scroll.scrollTo(0, y) }
-            updateHeader()
-        } else title = Themes.tint(title, th.text)
-        invalidateOptionsMenu()
+        }
+        val shownTitle = if (::topBar.isInitialized) topBar.title.text to topBar.subtitle.text else null
+        buildTopBar()
+        if (bookId != null) updateHeader() else shownTitle?.let { (t, sub) -> topBar.setTitle(t, sub) } ?: topBar.setTitle("bagueration2.0")
     }
 
     private fun applyTypography() {
         pageView.textSize = prefs.getInt("font_size", 19).toFloat()
-        pageView.typeface = if (prefs.getString("font", "serif") == "sans") Typeface.SANS_SERIF else Typeface.SERIF
+        pageView.typeface = Ui.bookFont(this)
         pageView.setLineSpacing(0f, prefs.getFloat("spacing", 1.4f))
         pageView.justificationMode = if (prefs.getBoolean("justify", true))
             android.text.Layout.JUSTIFICATION_MODE_INTER_WORD else android.text.Layout.JUSTIFICATION_MODE_NONE
@@ -1405,7 +1404,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private fun setFullscreen(on: Boolean) {
         fullscreen = on
         findViewById<android.view.View>(R.id.controls).visibility = if (on) android.view.View.GONE else android.view.View.VISIBLE
-        if (on) actionBar?.hide() else actionBar?.show()
+        topBar.view.visibility = if (on) View.GONE else View.VISIBLE
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.let { c ->
                 if (on) {
@@ -1414,10 +1413,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                 } else c.show(android.view.WindowInsets.Type.systemBars())
             }
         } else {
-            window.decorView.systemUiVisibility = if (on)
-                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
-                    android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            else 0
+            val hide = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            val v = window.decorView.systemUiVisibility
+            window.decorView.systemUiVisibility = if (on) v or hide else v and hide.inv()
         }
         if (on) Toast.makeText(this, "Tap anywhere to show the controls", Toast.LENGTH_SHORT).show()
     }

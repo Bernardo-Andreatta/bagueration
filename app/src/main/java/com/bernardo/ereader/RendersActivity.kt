@@ -11,8 +11,6 @@ import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.Gravity
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -59,33 +57,28 @@ class RendersActivity : Activity() {
         super.onCreate(savedInstanceState)
         th = Themes.current(this)
         Themes.applyChrome(this, th)
-        title = Themes.tint("Audio files", th.text)
-        actionBar?.subtitle = Themes.tint(BookStore.prefs(this).getString("title_$bookId", bookId), th.dim)
-        actionBar?.setDisplayHomeAsUpEnabled(true)
-        actionBar?.setHomeAsUpIndicator(Icons.get(this, R.drawable.ic_chevron_left, th.text, 24f))
+        Ui.edgeToEdge(this)
+        val bar = Ui(this, th).topBar("Audio files", BookStore.prefs(this).getString("title_$bookId", bookId),
+            nav = Ui.Action(R.drawable.ic_chevron_left, "Back") { finish() },
+            actions = listOf(Ui.Action(R.drawable.ic_add, "New audio file") { newFile() }))
         RenderManager.markInterrupted(this, bookId)
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(32)) }
-        setContentView(ScrollView(this).apply { setBackgroundColor(th.bg); addView(list) })
+        val scroll = ScrollView(this).apply { clipToPadding = false; addView(list) }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(th.bg)
+            addView(bar.view)
+            addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+            Ui.onInsets(this) { b ->
+                bar.view.setPadding(b.left, b.top, b.right, 0)
+                scroll.setPadding(b.left, 0, b.right, b.bottom)
+            }
+        })
         render()
     }
 
     override fun onResume() { super.onResume(); list.post(refresh) }
     override fun onPause() { super.onPause(); list.removeCallbacks(refresh) }
-
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, 1, 0, "New audio file").setIcon(Icons.get(this, R.drawable.ic_add, th.text, 24f))
-            .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            1 -> newFile()
-            android.R.id.home -> finish()
-            else -> return super.onOptionsItemSelected(item)
-        }
-        return true
-    }
 
     // ---------- state ----------
 

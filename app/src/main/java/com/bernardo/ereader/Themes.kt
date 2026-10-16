@@ -5,9 +5,6 @@ import android.app.AlertDialog
 import android.content.Context
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
-import android.text.SpannableString
-import android.text.Spannable
-import android.text.style.ForegroundColorSpan
 import android.view.View
 
 /** Reading themes. Colors are applied at runtime so switching is instant and keeps narration going. */
@@ -24,12 +21,20 @@ class ReaderTheme(
     val highlight: Int,
     val selection: Int,
     val light: Boolean,
+    /** Cards on the page. */
+    val surface: Int = if (light) Themes.mix(bg, 0xFFFFFFFF.toInt(), 0.5f) else Themes.mix(bg, 0xFFFFFFFF.toInt(), 0.06f),
+    /** Hairlines: card borders, dividers, unselected chips. */
+    val outline: Int = Themes.mix(bar, text, 0.14f),
+    /** Behind sheets: the page, faded. */
+    val scrim: Int = (bg and 0xFFFFFF) or (0x99 shl 24),
 )
 
 object Themes {
     private fun c(hex: Long) = (0xFF000000 or hex).toInt()
 
     val all = listOf(
+        ReaderTheme("linen", "Linen", c(0xF4EDE1), c(0xEBE2D2), c(0x2B2520), c(0x6E6257), c(0xB0633A), c(0xFFF6EC), c(0x6E3B21), c(0xF0D6B0), c(0xE2C08E), true),
+        ReaderTheme("dusk", "Dusk", c(0x211C18), c(0x1A1613), c(0xE6DCCB), c(0x9A8E7E), c(0xD9A866), c(0x1F1710), c(0xEFC98C), c(0x4A3A22), c(0x6A5230), false),
         ReaderTheme("midnight", "Midnight", c(0x1E2430), c(0x171C26), c(0xD3D9E3), c(0x8A94A6), c(0x8FB3E8), c(0x10151D), c(0xA9C4EE), c(0x34496B), c(0x4A6390), false),
         ReaderTheme("graphite", "Graphite", c(0x252627), c(0x1B1C1D), c(0xD8D8D4), c(0x8F908C), c(0xC9CCD2), c(0x1B1C1D), c(0xEDEDE8), c(0x47494E), c(0x5C5F66), false),
         ReaderTheme("black", "Black", c(0x000000), c(0x0C0C0C), c(0xC8C8C8), c(0x777777), c(0x8FB3E8), c(0x000000), c(0xE8E8E8), c(0x1D2840), c(0x2D3C58), false),
@@ -39,9 +44,27 @@ object Themes {
 
     fun current(ctx: Context): ReaderTheme {
         val p = BookStore.prefs(ctx)
-        val id = p.getString("theme", "midnight")
+        // never picked one: follow the system, warm either way
+        val night = (ctx.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val id = p.getString("theme", null) ?: if (night) "dusk" else "linen"
         if (id == "custom") return derive(p.getInt("custom_bg", all[0].bg), p.getInt("custom_accent", all[0].accent))
         return all.firstOrNull { it.id == id } ?: all[0]
+    }
+
+    /**
+     * Before the warm themes and Literata, the defaults were Midnight and the system serif. Anyone who already used
+     * the app keeps those; only new installs get the new defaults. Runs once, at app start.
+     */
+    fun migrate(ctx: Context) {
+        val p = BookStore.prefs(ctx)
+        if (p.contains("theme") && p.contains("font")) return
+        val existing = p.contains("last_book") || p.contains("speed") || BookStore.dir(ctx).list().orEmpty().isNotEmpty()
+        if (!existing) return
+        p.edit().apply {
+            if (!p.contains("theme")) putString("theme", "midnight")
+            if (!p.contains("font")) putString("font", "serif")
+        }.apply()
     }
 
     fun set(ctx: Context, t: ReaderTheme) = BookStore.prefs(ctx).edit().putString("theme", t.id).apply()
@@ -57,9 +80,9 @@ object Themes {
     }
 
     val backgrounds = listOf(0x1E2430, 0x252627, 0x000000, 0x0F1E2E, 0x1F2A24, 0x2A1F2D, 0x2B2A27,
-        0xF3EAD6, 0xFAFAF7, 0xE8EEF2, 0xF6E9E4, 0xD9E4D3).map { c(it.toLong()) }
+        0xF4EDE1, 0x211C18, 0xF3EAD6, 0xFAFAF7, 0xE8EEF2, 0xF6E9E4, 0xD9E4D3).map { c(it.toLong()) }
     val accents = listOf(0x8FB3E8, 0x6FD0E0, 0x7FC8A9, 0x16A085, 0xE8C36A, 0xE8A87C, 0xE87C8F, 0xC0392B,
-        0xC59BE8, 0xB0B5BD, 0x8A5A2B, 0x2F5D9E).map { c(it.toLong()) }
+        0xC59BE8, 0xB0B5BD, 0x8A5A2B, 0x2F5D9E, 0xB0633A, 0xD9A866).map { c(it.toLong()) }
 
     // ---------- deriving a full palette from two colors ----------
 
@@ -242,27 +265,23 @@ object Themes {
         }
     }
 
-    /** Action bar, status bar and nav bar colors for the given theme. */
+    /** System bars are transparent (edge-to-edge, see [Ui.edgeToEdge]); only their icons follow the theme. */
     @Suppress("DEPRECATION")
     fun applyChrome(a: Activity, t: ReaderTheme) {
-        a.window.statusBarColor = t.bar
-        a.window.navigationBarColor = t.bar
         a.window.decorView.setBackgroundColor(t.bg)
-        a.actionBar?.setBackgroundDrawable(ColorDrawable(t.bar))
-        a.actionBar?.elevation = 0f
+        lightBars(a.window, t.light)
+    }
+
+    @Suppress("DEPRECATION")
+    fun lightBars(w: android.view.Window, light: Boolean) {
         if (Build.VERSION.SDK_INT >= 30) {
             val flags = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
                 android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            a.window.insetsController?.setSystemBarsAppearance(if (t.light) flags else 0, flags)
+            w.insetsController?.setSystemBarsAppearance(if (light) flags else 0, flags)
         } else {
-            var v = a.window.decorView.systemUiVisibility
-            v = if (t.light) v or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR else v and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
-            a.window.decorView.systemUiVisibility = v
+            val flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            val v = w.decorView.systemUiVisibility
+            w.decorView.systemUiVisibility = if (light) v or flags else v and flags.inv()
         }
-    }
-
-    /** Action bar text in theme colors (the base theme's title color is fixed light). */
-    fun tint(s: CharSequence?, color: Int): CharSequence? = s?.let {
-        SpannableString(it.toString()).apply { setSpan(ForegroundColorSpan(color), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
     }
 }

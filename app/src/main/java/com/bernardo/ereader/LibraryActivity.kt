@@ -10,8 +10,6 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.Gravity
-import android.view.Menu
-import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -35,6 +33,7 @@ class LibraryActivity : Activity() {
         private const val REQ_IMPORT = 1
     }
 
+    private lateinit var topBar: Ui.TopBar
     private lateinit var grid: GridView
     private lateinit var empty: TextView
     private lateinit var importing: FrameLayout
@@ -46,9 +45,11 @@ class LibraryActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Themes.applyChrome(this, th)
-        title = Themes.tint("Library", th.text)
-        actionBar?.setDisplayHomeAsUpEnabled(intent.getStringExtra(EXTRA_CURRENT) != null)
-        actionBar?.setHomeAsUpIndicator(getDrawable(R.drawable.ic_chevron_left)?.mutate()?.apply { setTint(th.text) })
+        Ui.edgeToEdge(this)
+        topBar = Ui(this, th).topBar("Library",
+            nav = if (intent.getStringExtra(EXTRA_CURRENT) != null) Ui.Action(R.drawable.ic_chevron_left, "Back") { finish() } else null,
+            actions = listOf(Ui.Action(R.drawable.ic_add, "Add book") { addBook() },
+                Ui.Action(R.drawable.ic_bug, "Send debug log") { AppLog.share(this) }))
 
         val pad = (12 * d).toInt()
         val spacing = (14 * d).toInt()
@@ -104,11 +105,19 @@ class LibraryActivity : Activity() {
             }, LinearLayout.LayoutParams(-1, (resources.displayMetrics.widthPixels / 2.4f).toInt().coerceAtMost((220 * d).toInt())))
             addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
         }
-        setContentView(FrameLayout(this).apply {
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setBackgroundColor(th.bg)
-            addView(content)
-            addView(empty, FrameLayout.LayoutParams(-1, -1))
-            addView(importing, FrameLayout.LayoutParams(-1, -1))
+            addView(topBar.view)
+            addView(FrameLayout(this@LibraryActivity).apply {
+                addView(content)
+                addView(empty, FrameLayout.LayoutParams(-1, -1))
+                addView(importing, FrameLayout.LayoutParams(-1, -1))
+            }, LinearLayout.LayoutParams(-1, 0, 1f))
+            Ui.onInsets(this) { b ->
+                topBar.view.setPadding(b.left, b.top, b.right, 0)
+                grid.setPadding(pad + b.left, pad, pad + b.right, pad + b.bottom)
+            }
         })
         refresh()
     }
@@ -116,7 +125,7 @@ class LibraryActivity : Activity() {
     private fun refresh() {
         books = BookStore.list(this)
         empty.visibility = if (books.isEmpty()) View.VISIBLE else View.GONE
-        actionBar?.subtitle = if (books.isEmpty()) null else Themes.tint("Tap to open · hold for options", th.dim)
+        topBar.setTitle("Library", if (books.isEmpty()) null else "Tap to open · hold for options")
         grid.adapter = Adapter()
     }
 
@@ -150,31 +159,17 @@ class LibraryActivity : Activity() {
             .show()
     }
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, 2, 1, "Send debug log")
-        val add = menu.add(0, 1, 0, "Add book").setIcon(R.drawable.ic_add)
-        add.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS or MenuItem.SHOW_AS_ACTION_WITH_TEXT)
-        add.icon?.mutate()?.setTint(th.text)
-        return true
+    private fun addBook() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"   // format is detected from the file contents (mobi/fb2/azw3 are often mislabeled)
+        }, REQ_IMPORT)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (intent.getBooleanExtra(EXTRA_EXIT_ON_BACK, false)) setResult(RESULT_CANCELED, Intent().putExtra(EXTRA_EXIT, true))
         super.onBackPressed()
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
-            1 -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"   // format is detected from the file contents (mobi/fb2/azw3 are often mislabeled)
-            }, REQ_IMPORT)
-            android.R.id.home -> finish()
-            2 -> AppLog.share(this)
-            else -> return super.onOptionsItemSelected(item)
-        }
-        return true
     }
 
     @Deprecated("Deprecated in Java")

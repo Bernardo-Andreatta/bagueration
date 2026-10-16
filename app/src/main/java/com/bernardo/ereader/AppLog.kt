@@ -36,6 +36,7 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         AppLog.init(this)
+        Themes.migrate(this)
     }
 }
 

@@ -6,7 +6,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
-import android.view.MenuItem
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -75,19 +74,26 @@ class SettingsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Ui.edgeToEdge(this)
         build()
     }
 
     private var scrollView: ScrollView? = null
     private var holder: android.widget.FrameLayout? = null
+    private var topBar: Ui.TopBar? = null
+    private var bars = Ui.Bars(0, 0, 0, 0)
+
+    /** Top bar below the status bar, the list's end above the navigation bar. */
+    private fun padForBars() {
+        topBar?.view?.setPadding(bars.left, bars.top, bars.right, 0)
+        scrollView?.setPadding(bars.left, 0, bars.right, bars.bottom)
+    }
 
     private fun build() {
         val keepY = scrollView?.scrollY
         th = Themes.current(this)
         Themes.applyChrome(this, th)
-        title = Themes.tint("Settings", th.text)
-        actionBar?.setDisplayHomeAsUpEnabled(true)
-        actionBar?.setHomeAsUpIndicator(getDrawable(R.drawable.ic_chevron_left)?.mutate()?.apply { setTint(th.text) })
+        val bar = Ui(this, th).topBar("Settings", nav = Ui.Action(R.drawable.ic_chevron_left, "Back") { finish() })
 
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(PAGE_PAD), dp(4), dp(PAGE_PAD), dp(32)) }
         col.addView(voiceCard())
@@ -105,28 +111,33 @@ class SettingsActivity : Activity() {
         col.addView(aboutCard())
         col.addView(button("Reset to defaults", R.drawable.ic_reset, filled = false) { confirmResetAll() },
             LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(20) })
-        val scroll = ScrollView(this).apply { setBackgroundColor(th.bg); addView(col) }
-        val old = scrollView
+        val scroll = ScrollView(this).apply { clipToPadding = false; addView(col) }
+        val screen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(th.bg)
+            addView(bar.view)
+            addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        }
+        val old = (scrollView?.parent as? View)
         scrollView = scroll
+        topBar = bar
         val root = holder ?: android.widget.FrameLayout(this).also { holder = it; setContentView(it) }
         root.setBackgroundColor(th.bg)
-        if (old == null) root.addView(scroll)
-        else {
+        if (old == null) {
+            root.addView(screen)
+            Ui.onInsets(root) { bars = it; padForBars() }
+        } else {
             // fade the rebuilt screen in over the old one instead of a hard swap (no flash)
-            scroll.alpha = 0f
-            root.addView(scroll)
-            scroll.animate().alpha(1f).setDuration(160).withEndAction { root.removeView(old) }.start()
+            screen.alpha = 0f
+            root.addView(screen)
+            screen.animate().alpha(1f).setDuration(160).withEndAction { root.removeView(old) }.start()
         }
+        padForBars()
         if (keepY != null) {
             scroll.post { scroll.scrollTo(0, keepY) }   // rebuilt after a change: stay where you were
         } else if (intent.getStringExtra(EXTRA_SECTION) == SECTION_APPEARANCE) {
             scroll.post { appearanceCard?.let { scroll.scrollTo(0, it.top - dp(8)) } }
         }
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        if (item.itemId == android.R.id.home) { finish(); return true }
-        return super.onOptionsItemSelected(item)
     }
 
     override fun onDestroy() {
@@ -392,10 +403,10 @@ class SettingsActivity : Activity() {
             keepInPlace(sizeSlider) { refreshSample() }
         }
 
-        val font = prefs.getString("font", "serif")
+        val font = prefs.getString("font", "literata")
         addView(label("Font"))
         lateinit var fontRow: View
-        fontRow = chips(listOf("Serif" to "serif", "Sans" to "sans"), font) { v ->
+        fontRow = chips(listOf("Literata" to "literata", "Serif" to "serif", "Sans" to "sans"), font) { v ->
             prefs.edit().putString("font", v).apply(); keepInPlace(fontRow) { refreshSample() }
         }
         addView(fontRow)
@@ -457,7 +468,7 @@ class SettingsActivity : Activity() {
     private fun refreshSample(size: Float? = null) {
         val tv = sample ?: return
         tv.textSize = size ?: prefs.getInt("font_size", 19).toFloat()
-        tv.typeface = if (prefs.getString("font", "serif") == "sans") Typeface.SANS_SERIF else Typeface.SERIF
+        tv.typeface = Ui.bookFont(this)
         tv.setLineSpacing(0f, prefs.getFloat("spacing", 1.4f))
         tv.justificationMode = if (prefs.getBoolean("justify", true))
             android.text.Layout.JUSTIFICATION_MODE_INTER_WORD else android.text.Layout.JUSTIFICATION_MODE_NONE
@@ -960,7 +971,7 @@ class SettingsActivity : Activity() {
                     // one line: shrink a long label ("One sentence") to fit its share of the row instead of wrapping
                     isSingleLine = true
                     setAutoSizeTextTypeUniformWithConfiguration(10, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
-                    if (value == "serif") typeface = Typeface.SERIF
+                    if (value == "serif" || value == "sans" || value == "literata") typeface = Ui.bookFont(this@SettingsActivity, value)
                     setOnClickListener { touched = group; onPick(value); paint(value) }
                     views += this
                 }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i < options.size - 1) marginEnd = dp(8) })
