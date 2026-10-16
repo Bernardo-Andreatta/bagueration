@@ -1,14 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- The page fills the screen; the top bar (added in code) and the player float over it and slide away while you read. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/root"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical">
-
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+    android:layout_height="match_parent">
 
     <ScrollView
         android:id="@+id/scroll"
@@ -17,168 +12,171 @@
         android:fillViewport="true"
         android:scrollbarStyle="outsideOverlay">
 
-        <TextView
+        <com.bernardo.ereader.PageView
             android:id="@+id/page"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
             android:breakStrategy="high_quality"
             android:hyphenationFrequency="normal"
             android:paddingHorizontal="24dp"
-            android:paddingTop="20dp"
-            android:paddingBottom="48dp"
+            android:paddingTop="88dp"
+            android:paddingBottom="140dp"
             android:textIsSelectable="true" />
     </ScrollView>
 
-        <!-- centered "preparing voice" indicator while audio is being generated -->
-        <LinearLayout
-            android:id="@+id/loadingOverlay"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:elevation="8dp"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:paddingHorizontal="28dp"
-            android:paddingVertical="22dp"
-            android:visibility="gone">
+    <!-- shown instead of the page when no book is open -->
+    <FrameLayout
+        android:id="@+id/emptyHolder"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:paddingHorizontal="24dp"
+        android:visibility="gone" />
 
-            <ProgressBar
-                android:id="@+id/loadingSpinner"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:indeterminate="true" />
-
-            <TextView
-                android:id="@+id/loadingText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:textSize="14sp" />
-        </LinearLayout>
-
-        <!-- shown while narrating if you scrolled away: jumps back to the spoken sentence -->
-        <ImageButton
-            android:id="@+id/jumpBack"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_gravity="bottom|end"
-            android:layout_margin="16dp"
-            android:contentDescription="Back to the sentence being read"
-            android:elevation="6dp"
-            android:src="@drawable/ic_expand_more"
-            android:visibility="gone" />
-    </FrameLayout>
-
+    <!-- bottom dock: small notices above the player, then the player; slides down as one -->
     <LinearLayout
-        android:id="@+id/controls"
+        android:id="@+id/dock"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingHorizontal="16dp"
-        android:paddingTop="10dp"
-        android:paddingBottom="8dp">
+        android:layout_gravity="bottom"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+        <!-- appears only if preparing the voice takes more than a moment -->
+        <TextView
+            android:id="@+id/bufferPill"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginBottom="10dp"
+            android:elevation="4dp"
             android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingHorizontal="4dp">
+            android:paddingHorizontal="14dp"
+            android:textSize="13sp"
+            android:visibility="gone" />
 
-            <TextView
-                android:id="@+id/pageLabel"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:singleLine="true"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/audioChip"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:drawablePadding="4dp"
-                android:gravity="center_vertical"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="4dp"
-                android:text="Pre-load"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/speedChip"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:paddingHorizontal="12dp"
-                android:paddingVertical="4dp"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
+        <!-- shown while narrating if you scrolled away: back to the sentence being read -->
+        <TextView
+            android:id="@+id/jumpBack"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_marginBottom="12dp"
+            android:elevation="6dp"
+            android:gravity="center_vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="18dp"
+            android:text="Back to the voice"
+            android:textSize="14sp"
+            android:visibility="gone" />
 
         <LinearLayout
+            android:id="@+id/controls"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:orientation="horizontal">
+            android:clickable="true"
+            android:orientation="vertical"
+            android:paddingHorizontal="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="4dp">
 
-            <ImageButton
-                android:id="@+id/prev"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Previous chapter"
-                android:src="@drawable/ic_chevron_left" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="4dp">
 
-            <ImageButton
-                android:id="@+id/back"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:layout_marginStart="8dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Previous sentence"
-                android:src="@drawable/ic_skip_prev" />
+                <TextView
+                    android:id="@+id/pageLabel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:singleLine="true"
+                    android:textSize="13sp" />
 
-            <FrameLayout
-                android:layout_width="72dp"
-                android:layout_height="72dp"
-                android:layout_marginHorizontal="14dp">
+                <TextView
+                    android:id="@+id/audioChip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="8dp"
+                    android:gravity="center_vertical"
+                    android:maxLines="1"
+                    android:text="Pre-load"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/speedChip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="8dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:minWidth="56dp"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:gravity="center"
+                android:orientation="horizontal">
 
                 <ImageButton
-                    android:id="@+id/play"
-                    android:layout_width="60dp"
-                    android:layout_height="60dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="Read aloud"
-                    android:elevation="3dp"
-                    android:src="@drawable/ic_play" />
+                    android:id="@+id/prev"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:contentDescription="Previous chapter"
+                    android:src="@drawable/ic_chevron_left" />
 
-                <ProgressBar
-                    android:id="@+id/busy"
-                    android:layout_width="72dp"
-                    android:layout_height="72dp"
-                    android:elevation="4dp"
-                    android:indeterminate="true"
-                    android:visibility="gone" />
-            </FrameLayout>
+                <ImageButton
+                    android:id="@+id/back"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="12dp"
+                    android:contentDescription="Previous sentence"
+                    android:src="@drawable/ic_skip_prev" />
 
-            <ImageButton
-                android:id="@+id/fwd"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:layout_marginEnd="8dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Next sentence"
-                android:src="@drawable/ic_skip_next" />
+                <FrameLayout
+                    android:layout_width="64dp"
+                    android:layout_height="64dp"
+                    android:layout_marginHorizontal="18dp">
 
-            <ImageButton
-                android:id="@+id/next"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Next chapter"
-                android:src="@drawable/ic_chevron_right" />
+                    <ImageButton
+                        android:id="@+id/play"
+                        android:layout_width="56dp"
+                        android:layout_height="56dp"
+                        android:layout_gravity="center"
+                        android:contentDescription="Read aloud"
+                        android:elevation="2dp"
+                        android:src="@drawable/ic_play" />
+
+                    <ProgressBar
+                        android:id="@+id/busy"
+                        android:layout_width="64dp"
+                        android:layout_height="64dp"
+                        android:elevation="3dp"
+                        android:importantForAccessibility="no"
+                        android:indeterminate="true"
+                        android:visibility="gone" />
+                </FrameLayout>
+
+                <ImageButton
+                    android:id="@+id/fwd"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginEnd="12dp"
+                    android:contentDescription="Next sentence"
+                    android:src="@drawable/ic_skip_next" />
+
+                <ImageButton
+                    android:id="@+id/next"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:contentDescription="Next chapter"
+                    android:src="@drawable/ic_chevron_right" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
-</LinearLayout>
+</FrameLayout>

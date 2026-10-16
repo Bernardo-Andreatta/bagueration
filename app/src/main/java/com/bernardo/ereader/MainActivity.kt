@@ -15,7 +15,6 @@ import android.text.style.StyleSpan
 import android.net.Uri
 import android.os.Bundle
 import android.text.Spannable
-import android.text.style.BackgroundColorSpan
 import android.view.ActionMode
 import android.view.GestureDetector
 import android.view.Menu
@@ -61,8 +60,11 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private lateinit var speedChip: TextView
     private lateinit var audioChip: TextView
     private lateinit var controls: LinearLayout
-    private lateinit var jumpBack: ImageButton
-    private lateinit var loadingOverlay: LinearLayout
+    private lateinit var jumpBack: TextView
+    private lateinit var dock: LinearLayout
+    private lateinit var bufferPill: TextView
+    private lateinit var emptyHolder: android.widget.FrameLayout
+    private lateinit var progressLine: View
     /** Auto-scroll with the voice; turned off when you scroll or change chapter yourself. */
     private var follow = true
     private var spoken = -1 to -1     // sentence currently being read
@@ -84,33 +86,131 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     /** Paused in a pre-made audio file: which one and where (ms), to continue at that exact spot. */
     private var heardFile: Pair<String, Long>? = null
     private var pausedWhileHidden = false
-    private var highlight = BackgroundColorSpan(0)
-    private var tapMark = BackgroundColorSpan(0)
+    private var highlight = Mark(0, 2)
+    private var tapMark = Mark(0, 1)
     private var jumpPopup: PopupWindow? = null
     private var fullscreen = false
     private lateinit var topBar: Ui.TopBar
     private var bars = Ui.Bars(0, 0, 0, 0)
 
     private fun padForBars() {
-        topBar.view.setPadding(bars.left, bars.top, bars.right, 0)
         val d = resources.displayMetrics.density
-        controls.setPadding((16 * d).toInt() + bars.left, (10 * d).toInt(), (16 * d).toInt() + bars.right, (8 * d).toInt() + bars.bottom)
+        topBar.view.setPadding(bars.left, bars.top, bars.right, 0)
+        controls.setPadding((12 * d).toInt() + bars.left, (6 * d).toInt(), (12 * d).toInt() + bars.right, (4 * d).toInt() + bars.bottom)
+        emptyHolder.setPadding((24 * d).toInt() + bars.left, bars.top, (24 * d).toInt() + bars.right, bars.bottom)
+        // full screen hides the status bar: keep the text where it is
+        if (!fullscreen) layoutPage()
     }
 
-    /** The top bar, (re)made in the current theme: title = book, subtitle = chapter. */
+    /**
+     * The text column: at most 680dp wide and centered (tablets, landscape), with the margins setting at the sides,
+     * and clear of the top bar and the player that float over it.
+     */
+    private fun layoutPage() {
+        val d = resources.displayMetrics.density
+        val margin = (prefs.getInt("margins", 24) * d).toInt()
+        val avail = (scroll.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels) - bars.left - bars.right
+        val maxCol = (680 * d).toInt()
+        val capped = avail - 2 * margin > maxCol
+        val side = if (capped) maxOf(margin, (32 * d).toInt()) else margin
+        val lp = pageView.layoutParams as android.widget.FrameLayout.LayoutParams
+        val width = if (capped) maxCol + 2 * side else -1
+        if (lp.width != width || lp.leftMargin != bars.left || lp.rightMargin != bars.right) {
+            lp.width = width; lp.gravity = Gravity.CENTER_HORIZONTAL
+            lp.leftMargin = bars.left; lp.rightMargin = bars.right
+            pageView.layoutParams = lp
+        }
+        // top bar: status bar + 56dp + the progress line; player: ~114dp + navigation bar
+        pageView.setPadding(side, bars.top + (58 * d).toInt() + (14 * d).toInt(), side, bars.bottom + (114 * d).toInt() + (36 * d).toInt())
+    }
+
+    /** The top bar, (re)made in the current theme: back to the library, title = book, subtitle = chapter. */
     private fun buildTopBar() {
-        val root = findViewById<LinearLayout>(R.id.root)
+        val root = findViewById<android.widget.FrameLayout>(R.id.root)
         if (::topBar.isInitialized) root.removeView(topBar.view)
-        topBar = Ui(this, th).topBar(null, actions = listOf(
-            Ui.Action(R.drawable.ic_toc, "Contents") { showChapters() },
-            Ui.Action(R.drawable.ic_search, "Search") { showSearch() },
-            Ui.Action(R.drawable.ic_library, "Library") { showLibrary() },
-            Ui.Action(R.drawable.ic_fullscreen, "Full screen") { setFullscreen(true) },
-            Ui.Action(R.drawable.ic_settings, "Settings") { openSettings(null) },
-        ), background = Themes.pageBackground(this, th))
-        root.addView(topBar.view, 0)
-        if (fullscreen) topBar.view.visibility = View.GONE
+        topBar = Ui(this, th).topBar(null, nav = Ui.Action(R.drawable.ic_chevron_left, "Library") { showLibrary() },
+            actions = listOf(
+                Ui.Action(R.drawable.ic_toc, "Contents") { showChapters() },
+                Ui.Action(R.drawable.ic_search, "Search") { showSearch() },
+                Ui.Action(R.drawable.ic_more, "More") { showMore() },
+            ), background = Themes.pageBackground(this, th))
+        // where you are in the chapter: a thin line along the bar's bottom edge (stays when the bar slides away)
+        progressLine = View(this).apply {
+            background = android.graphics.drawable.LayerDrawable(arrayOf(
+                android.graphics.drawable.ColorDrawable(th.outline),
+                android.graphics.drawable.ClipDrawable(android.graphics.drawable.ColorDrawable(th.accent), Gravity.START,
+                    android.graphics.drawable.ClipDrawable.HORIZONTAL)))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        topBar.view.addView(progressLine, LinearLayout.LayoutParams(-1, maxOf(2, (2 * resources.displayMetrics.density).toInt())))
+        root.addView(topBar.view, root.indexOfChild(dock), android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        if (barsHidden) {
+            topBar.row.alpha = 0f; topBar.row.visibility = View.INVISIBLE
+            topBar.view.post { topBar.view.translationY = -topBar.row.height.toFloat() }
+        }
         padForBars()
+        updateProgressLine()
+    }
+
+    private fun updateProgressLine() {
+        if (!::progressLine.isInitialized) return
+        val child = scroll.getChildAt(0) ?: return
+        val range = (child.height - scroll.height).coerceAtLeast(1)
+        val f = if (bookId == null) 0f else (scroll.scrollY.toFloat() / range).coerceIn(0f, 1f)
+        (progressLine.background as android.graphics.drawable.LayerDrawable).getDrawable(1).level = (f * 10000).toInt()
+    }
+
+    private fun showMore() {
+        Ui(this, th).menuSheet(null, listOfNotNull(
+            Ui.Action(R.drawable.ic_fullscreen, "Full screen") { setFullscreen(true) },
+            if (bookId != null) Ui.Action(R.drawable.ic_headphones, "Audio files") { openRenders() } else null,
+            Ui.Action(R.drawable.ic_text_format, "Appearance") { openSettings(SettingsActivity.SECTION_APPEARANCE) },
+            Ui.Action(R.drawable.ic_settings, "Settings") { openSettings(null) },
+            Ui.Action(R.drawable.ic_library, "Library") { showLibrary() },
+        ))
+    }
+
+    // ---------- bars that slide away while you read ----------
+
+    private var barsHidden = false
+    private var scrollRun = 0
+
+    /** Scrolling down hides the bars, scrolling up (or reaching the end) brings them back. Not while following the voice. */
+    private fun autoHideBars(dy: Int, y: Int) {
+        if (fullscreen || bookId == null) return
+        if (narrator.isPlaying && follow) { scrollRun = 0; return }
+        scrollRun = if (dy != 0 && (dy > 0) == (scrollRun > 0)) scrollRun + dy else dy
+        val d = resources.displayMetrics.density
+        val atEnd = y + scroll.height >= (scroll.getChildAt(0)?.height ?: 0) - 8 * d
+        when {
+            atEnd || y < 48 * d -> showBars()
+            scrollRun > 24 * d -> hideBars()
+            scrollRun < -24 * d -> showBars()
+        }
+    }
+
+    private fun showBars() {
+        if (!barsHidden || fullscreen) return
+        barsHidden = false
+        slideBars(false)
+    }
+
+    private fun hideBars() {
+        if (barsHidden) return
+        barsHidden = true
+        slideBars(true)
+    }
+
+    /** Top bar up (leaving the status-bar strip and the progress line), player down. Views only: narration carries on. */
+    private fun slideBars(hide: Boolean) {
+        val interp = android.view.animation.DecelerateInterpolator()
+        val dur = if (hide) 200L else 180L
+        val row = topBar.row
+        if (!hide) row.visibility = View.VISIBLE
+        topBar.view.animate().translationY(if (hide) -row.height.toFloat() else 0f).setDuration(dur).setInterpolator(interp).start()
+        row.animate().alpha(if (hide) 0f else 1f).setDuration(dur)
+            .withEndAction { if (barsHidden) row.visibility = View.INVISIBLE }.start()
+        dock.animate().translationY(if (hide) controls.height.toFloat() else 0f).setDuration(dur).setInterpolator(interp).start()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -127,7 +227,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         audioChip.setOnClickListener { openRenders() }
         controls = findViewById(R.id.controls)
         jumpBack = findViewById(R.id.jumpBack)
-        loadingOverlay = findViewById(R.id.loadingOverlay)
+        dock = findViewById(R.id.dock)
+        bufferPill = findViewById(R.id.bufferPill)
+        emptyHolder = findViewById(R.id.emptyHolder)
         jumpBack.setOnClickListener { returnToVoice() }
         scroll.setOnTouchListener { _, ev ->
             if (ev.actionMasked == MotionEvent.ACTION_MOVE && narrator.isPlaying && follow) {
@@ -165,10 +267,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         speedChip.setOnClickListener { pickSpeed() }
         updateSpeedChip()
         // remember where you are inside a chapter as you scroll (debounced)
-        scroll.setOnScrollChangeListener { _, _, _, _, _ ->
+        scroll.setOnScrollChangeListener { _, _, y, _, oldY ->
             pageView.removeCallbacks(saveScrollPos)
             pageView.postDelayed(saveScrollPos, 400)
             if (!follow) updateJumpBack()
+            updateProgressLine()
+            autoHideBars(y - oldY, y)
         }
         playBtn.setOnClickListener { togglePlay() }
 
@@ -239,8 +343,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (isOver(jumpBack, e) || isOver(loadingOverlay, e) || isOver(controls, e)) return false
+                if (isOver(jumpBack, e) || isOver(bufferPill, e) || isOver(controls, e) || isOver(topBar.view, e)) return false
                 if (fullscreen) { setFullscreen(false); return true }   // tap anywhere brings the controls back
+                showBars()
                 if (bookId == null || jumpPopup != null) return false
                 showJumpPopup(e.rawX, e.rawY)
                 return true
@@ -284,26 +389,35 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
+        val ui = Ui(this, th)
         val bubble = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply { cornerRadius = 18 * d; setColor(th.accent) }
-            elevation = 6 * d
-            setPadding(dp(6), dp(4), dp(6), dp(4))
+            background = ui.rounded(th.surface, 16, th.outline)
+            elevation = 8 * d
+            setPadding(dp(6), dp(6), dp(6), dp(6))
         }
         lateinit var popup: PopupWindow
+        // the first action is the main one: a filled pill; the others are quiet, with their icon in the accent
         fun action(label: String, icon: Int? = null, onClick: () -> Unit) = TextView(this).apply {
-            text = label; textSize = 14f; setTextColor(th.onAccent); gravity = Gravity.CENTER_VERTICAL
+            val primary = (bubble.tag as? Int ?: 0) == 0
+            bubble.tag = (bubble.tag as? Int ?: 0) + 1
+            text = label; textSize = 14f; gravity = Gravity.CENTER_VERTICAL
+            setTextColor(if (primary) th.onAccent else th.text)
+            if (primary) typeface = ui.medium
             isSingleLine = true
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            if (icon != null) Icons.leading(this, icon, th.onAccent, sizeDp = 18f, gapDp = 6f)
+            minHeight = dp(44)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            if (icon != null) Icons.leading(this, icon, if (primary) th.onAccent else th.accent, sizeDp = 18f, gapDp = 6f)
+            background = if (primary) android.graphics.drawable.RippleDrawable(ui.ripple(th.onAccent), ui.rounded(th.accent, 22), null)
+                else ui.pressable(radiusDp = 22)
             contentDescription = label
             setOnClickListener { popup.dismiss(); onClick() }
         }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         if (note != null) {
             // tapped a note: show it
             bubble.addView(TextView(this).apply {
-                text = note.note; textSize = 14f; setTextColor(th.onAccent); maxLines = 6
+                text = note.note; textSize = 14f; setTextColor(th.text); maxLines = 6
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 maxWidth = (resources.displayMetrics.widthPixels * 0.8).toInt()
                 setPadding(dp(10), dp(8), dp(10), dp(2))
@@ -325,7 +439,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val avail = resources.displayMetrics.widthPixels - dp(32)
         fun rowWidth(): Int { row.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED); return row.measuredWidth + dp(12) }
         val buttons = (0 until row.childCount).map { row.getChildAt(it) as TextView }
-        if (rowWidth() > avail) buttons.forEach { it.setPadding(dp(7), dp(8), dp(7), dp(8)); it.textSize = 13f }
+        if (rowWidth() > avail) buttons.forEach { it.setPadding(dp(8), dp(8), dp(8), dp(8)); it.textSize = 13f }
         if (rowWidth() > avail) buttons.drop(1).filter { it.compoundDrawablesRelative[0] != null }.forEach {
             it.text = ""; it.compoundDrawablePadding = 0; it.setPadding(dp(10), dp(8), dp(10), dp(8))
         }
@@ -340,7 +454,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         bubble.measure(0, 0)
         val x = (rawX - bubble.measuredWidth / 2).toInt().coerceIn(dp(8), (resources.displayMetrics.widthPixels - bubble.measuredWidth - dp(8)).coerceAtLeast(dp(8)))
-        val y = (rawY - bubble.measuredHeight - 28 * d).toInt().coerceAtLeast(sLoc[1])
+        val y = (rawY - bubble.measuredHeight - 28 * d).toInt().coerceAtLeast(bars.top + dp(8))
         jumpPopup = popup
         popup.showAtLocation(scroll, Gravity.NO_GRAVITY, x, y)
         pageView.postDelayed({ if (jumpPopup === popup) popup.dismiss() }, if (note != null) 8000 else 5000)
@@ -535,6 +649,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             ?: LangDetect.detect(text, prefs.getString("langtag_$id", null)).also { prefs.edit().putString("lang2_$id", it).apply() }
         narrator.voiceId = Voices.resolve(this, id, bookLang).id
         narrator.pronunciations = Pronunciations.rules(this, id)
+        // hyphenation and line breaks in the book's language, not the phone's
+        bookLang?.let { lang -> runCatching { pageView.textLocale = java.util.Locale.forLanguageTag(lang) } }
+        emptyHolder.visibility = View.GONE
+        dock.visibility = View.VISIBLE
         annotations = Annotations.list(this, id)
         AppLog.i("Reader", "book $id: ${text.length} chars, ${book.chapters.size} chapters, lang $bookLang, voice ${narrator.voiceId}")
         showPage(pageOf(readPos))
@@ -546,14 +664,22 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private fun showEmpty() {
         topBar.setTitle("bagueration2.0")
-        pageView.text = "No book open.\n\nOpen the Library and tap + to add one.\n\nTip: tap any sentence to start reading aloud from there."
+        pageView.text = ""
         pageLabel.text = ""
+        emptyHolder.removeAllViews()
+        emptyHolder.addView(Ui(this, th).emptyState(R.drawable.ic_library, "No book open",
+            "Add a book in the library, or pick one you've added.\nTip: tap any sentence to start reading aloud from there.",
+            "Open library", R.drawable.ic_library) { showLibrary() },
+            android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+        emptyHolder.visibility = View.VISIBLE
+        dock.visibility = View.GONE
+        updateProgressLine()
     }
 
     private var settingsSnapshot: List<Any> = emptyList()
     private var wasReadingBeforeSettings = false
     private var looksBeforeSettings: List<Any?> = emptyList()
-    private fun looksSnapshot(): List<Any?> = listOf("theme", "custom_bg", "custom_accent", "font_size", "font", "spacing", "justify", "paper_texture")
+    private fun looksSnapshot(): List<Any?> = listOf("theme", "custom_bg", "custom_accent", "font_size", "font", "spacing", "justify", "paper_texture", "margins")
         .map { prefs.all[it] }
 
     private fun openSettings(section: String?) {
@@ -631,33 +757,70 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         return idx
     }
 
+    /** "Chapter 3 of 12 · 14 min left": what's left of the chapter from where the voice is (or would start), at this speed. */
     private fun labelFor(p: Int): String {
-        val pct = pages[p] * 100L / text.length.coerceAtLeast(1)
         val unit = if (book.chapters.isNotEmpty()) "Chapter" else "Part"
-        return "$unit ${p + 1} of ${pages.size}  ·  $pct%"
+        val from = when {
+            narrator.isPlaying && spoken.first in pages[p] until pageEnd(p) -> spoken.first
+            !narrator.isPlaying && heardPos in pages[p] until pageEnd(p) -> heardPos
+            p == page && pageView.layout != null -> topVisibleOffset()
+            else -> pages[p]
+        }
+        val min = ((RenderManager.estimateMs(pageEnd(p) - from, narrator.speed, narrator.pauseMs) + 30_000) / 60_000).toInt()
+        val left = when {
+            min < 1 -> "under a minute left"
+            min < 60 -> "$min min left"
+            else -> "${min / 60} h ${min % 60} min left"
+        }
+        return "$unit ${p + 1} of ${pages.size}  ·  $left"
     }
 
-    /** Contents: Chapters / Bookmarks / Notes, tap to jump. */
+    /** Spoken length of a chapter, for the contents list. */
+    private fun chapterLength(i: Int): String {
+        val start = book.chapters[i].start
+        val end = book.chapters.getOrNull(i + 1)?.start ?: text.length
+        val min = ((RenderManager.estimateMs(end - start, narrator.speed, narrator.pauseMs) + 30_000) / 60_000).toInt()
+        return if (min < 1) "< 1 min" else if (min < 60) "$min min" else "${min / 60} h ${min % 60} min"
+    }
+
+    /** Contents: Chapters / Bookmarks / Notes in one sheet, tap to jump. Opens scrolled to the chapter you're in. */
     private fun showChapters(tab: Int = 0) {
         if (bookId == null) return
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
-        lateinit var dialog: android.app.AlertDialog
+        val ui = Ui(this, th)
+        lateinit var sheet: Ui.Sheet
         val listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(18), dp(4), dp(18), dp(8)) }
-        val names = listOf("Chapters", "Bookmarks (${annotations.count { !it.isNote }})", "Notes (${annotations.count { it.isNote }})")
+        val listScroll = ScrollView(this).apply { addView(listBox); overScrollMode = View.OVER_SCROLL_NEVER }
         var current = tab
 
-        fun row(title: CharSequence, sub: String?, selected: Boolean, onClick: () -> Unit) = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(10), dp(22), dp(10))
-            if (selected) setBackgroundColor(th.highlight)
-            addView(TextView(this@MainActivity).apply { text = title; textSize = 15f; setTextColor(th.text); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
-            if (sub != null) addView(TextView(this@MainActivity).apply { text = sub; textSize = 12f; setTextColor(th.dim); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END })
-            setOnClickListener { onClick() }
-        }
+        fun row(title: CharSequence, sub: String?, trailing: String?, selected: Boolean, more: (() -> Unit)?, onClick: (() -> Unit)?) =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(56)
+                setPadding(dp(12), dp(8), dp(if (more != null) 0 else 12), dp(8))
+                background = ui.pressable(if (selected) ui.tinted(0.16f, th.bar) else null)
+                if (selected) addView(View(this@MainActivity).apply { background = ui.oval(th.accent) },
+                    LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(10) })
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(this@MainActivity).apply {
+                        text = title; textSize = 15f; setTextColor(th.text); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                        if (selected) typeface = ui.medium
+                    })
+                    if (sub != null) addView(TextView(this@MainActivity).apply {
+                        text = sub; textSize = 12.5f; setTextColor(th.dim); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+                        setPadding(0, dp(2), 0, 0)
+                    })
+                }, LinearLayout.LayoutParams(0, -2, 1f))
+                if (trailing != null) addView(TextView(this@MainActivity).apply { text = trailing; textSize = 12.5f; setTextColor(th.dim) },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
+                if (more != null) addView(ui.iconButton(R.drawable.ic_more, "More options", tint = th.dim) { more() })
+                contentDescription = listOfNotNull(title, sub, trailing, if (selected) "reading now" else null).joinToString(", ")
+                if (onClick != null) setOnClickListener { onClick() }
+            }
         fun jump(pos: Int) {
-            dialog.dismiss()
+            sheet.dismiss()
             if (narrator.isPlaying) follow = false
             pickPosition(pos)
             val p = pageOf(pos)
@@ -672,57 +835,95 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         fun snippet(a: Annotation) = text.substring(a.start, a.end).trim().replace('\n', ' ').let { if (it.length > 140) it.take(140) + "…" else it }
         fun chapterOf(pos: Int) = book.chapters.getOrNull(chapterAt(pos))?.title
 
-        fun fill() {
-            listBox.removeAllViews()
-            for (i in 0 until tabs.childCount) (tabs.getChildAt(i) as TextView).let { c ->
-                val on = i == current
-                c.setTextColor(if (on) th.onAccent else th.text)
-                c.background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); if (on) setColor(th.accent) else setStroke(dp(1), th.dim) }
+        // segmented control: a sliding pill behind three labels
+        val seg = android.widget.FrameLayout(this).apply {
+            background = ui.rounded(th.surface, 22, th.outline)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val segPill = View(this).apply { background = ui.rounded(th.accent, 18) }
+        val segLabels = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        seg.addView(segPill, android.widget.FrameLayout.LayoutParams(0, -1))
+        seg.addView(segLabels, android.widget.FrameLayout.LayoutParams(-1, dp(40)))
+        fun segText(i: Int): String {
+            val n = when (i) { 1 -> annotations.count { !it.isNote }; 2 -> annotations.count { it.isNote }; else -> 0 }
+            return listOf("Chapters", "Bookmarks", "Notes")[i] + if (n > 0) " $n" else ""
+        }
+        lateinit var fill: () -> Unit
+        fun select(animate: Boolean) {
+            val w = segLabels.width / 3
+            if (w > 0) {
+                if (segPill.layoutParams.width != w) segPill.layoutParams = android.widget.FrameLayout.LayoutParams(w, -1)
+                if (animate) segPill.animate().translationX((current * w).toFloat()).setDuration(180)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+                else segPill.translationX = (current * w).toFloat()
             }
+            for (i in 0 until segLabels.childCount) (segLabels.getChildAt(i) as TextView).let { c ->
+                c.text = segText(i)
+                c.setTextColor(if (i == current) th.onAccent else th.text)
+                c.isSelected = i == current
+            }
+            fill()
+        }
+        for (i in 0..2) segLabels.addView(TextView(this).apply {
+            gravity = Gravity.CENTER; textSize = 13.5f; typeface = ui.medium; isSingleLine = true
+            setAutoSizeTextTypeUniformWithConfiguration(10, 14, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+            background = ui.pressable(radiusDp = 18)
+            setOnClickListener { if (current != i) { current = i; select(true) } }
+        }, LinearLayout.LayoutParams(0, -1, 1f))
+
+        fun annotationActions(a: Annotation) {
+            val go = Ui.Action(R.drawable.ic_chevron_right, "Go to it") { jump(a.start) }
+            Ui(this, th).menuSheet(if (a.isNote) "Note" else "Bookmark", if (a.isNote) listOf(go,
+                Ui.Action(R.drawable.ic_note, "Edit note") { sheet.dismiss(); editNote(a) },
+                Ui.Action(R.drawable.ic_delete, "Delete note") { removeAnnotation(a); select(false) },
+            ) else listOf(go,
+                Ui.Action(R.drawable.ic_bookmark_remove, "Remove bookmark") { removeAnnotation(a); select(false) },
+            ))
+        }
+
+        fill = {
+            listBox.removeAllViews()
+            var currentRow: View? = null
             when (current) {
-                0 -> if (book.chapters.isEmpty()) listBox.addView(row("No chapters found in this book", null, false) {})
-                     else book.chapters.forEachIndexed { i, c ->
-                         listBox.addView(row("${i + 1}.  ${c.title}", null, i == chapterAt(pages[page])) { jump(c.start) })
+                0 -> if (book.chapters.isEmpty()) listBox.addView(row("No chapters found in this book", null, null, false, null, null))
+                     else {
+                         val here = chapterAt(pages[page])
+                         book.chapters.forEachIndexed { i, c ->
+                             val r = row("${i + 1}.  ${c.title}", null, chapterLength(i), i == here, null) { jump(c.start) }
+                             if (i == here) currentRow = r
+                             listBox.addView(r)
+                         }
                      }
                 1 -> {
                     val marks = annotations.filter { !it.isNote }
-                    if (marks.isEmpty()) listBox.addView(row("No bookmarks yet", "Tap a sentence and choose Bookmark.", false) {})
-                    marks.forEach { a -> listBox.addView(row(snippet(a), chapterOf(a.start), false) { jump(a.start) }.apply {
-                        setOnLongClickListener { removeAnnotation(a); dialog.dismiss(); showChapters(1); true }
+                    if (marks.isEmpty()) listBox.addView(row("No bookmarks yet", "Tap a sentence and choose Bookmark.", null, false, null, null))
+                    marks.forEach { a -> listBox.addView(row(snippet(a), chapterOf(a.start), null, false, { annotationActions(a) }) { jump(a.start) }.apply {
+                        setOnLongClickListener { annotationActions(a); true }
                     }) }
                 }
                 else -> {
                     val notes = annotations.filter { it.isNote }
-                    if (notes.isEmpty()) listBox.addView(row("No notes yet", "Tap a sentence (or select text) and choose Note.", false) {})
+                    if (notes.isEmpty()) listBox.addView(row("No notes yet", "Tap a sentence (or select text) and choose Note.", null, false, null, null))
                     notes.forEach { a ->
                         val title = SpannableString(a.note!!).apply { setSpan(StyleSpan(Typeface.BOLD), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE) }
-                        listBox.addView(row(title, "“${snippet(a)}”" + (chapterOf(a.start)?.let { " · $it" } ?: ""), false) { jump(a.start) }.apply {
-                            setOnLongClickListener { dialog.dismiss(); editNote(a); true }
+                        listBox.addView(row(title, "“${snippet(a)}”" + (chapterOf(a.start)?.let { " · $it" } ?: ""), null, false,
+                            { annotationActions(a) }) { jump(a.start) }.apply {
+                            setOnLongClickListener { annotationActions(a); true }
                         })
                     }
                 }
             }
-            if (current > 0 && annotations.any { (it.isNote) == (current == 2) }) listBox.addView(TextView(this).apply {
-                text = if (current == 1) "Hold a bookmark to remove it." else "Hold a note to edit it."
-                textSize = 12f; setTextColor(th.dim); setPadding(dp(22), dp(10), dp(22), dp(4))
-            })
+            listScroll.scrollTo(0, 0)
+            currentRow?.let { r -> listScroll.post { listScroll.scrollTo(0, (r.top - listScroll.height / 3).coerceAtLeast(0)) } }
         }
-        names.forEachIndexed { i, n -> tabs.addView(TextView(this).apply {
-            text = n; textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(8), dp(7), dp(8), dp(7))
-            setOnClickListener { current = i; fill() }
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) }) }
-        fill()
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(tabs)
-            addView(ScrollView(this@MainActivity).apply { addView(listBox) },
-                LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.55).toInt()))
+
+        sheet = ui.sheet("Contents", scroll = false, tall = true) {
+            addView(seg, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(4), 0, dp(4), dp(8)) })
+            addView(listScroll, LinearLayout.LayoutParams(-1, 0, 1f))
         }
-        dialog = Themes.dialog(this).setTitle("Contents").setView(content)
-            .setNeutralButton("Audio files") { _, _ -> openRenders() }
-            .setNegativeButton("Close", null)
-            .create()
-        dialog.show()
+        select(false)
+        segLabels.post { select(false) }
+        sheet.show()
     }
 
     private fun pageOf(offset: Int): Int {
@@ -738,6 +939,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         pageView.setText(styledPage(page), TextView.BufferType.SPANNABLE)
         scroll.scrollTo(0, 0)
         pageLabel.text = labelFor(page)
+        scroll.post { updateProgressLine() }
         updateHeader()
         updateAudioChip()
         for ((id, enabled) in listOf(R.id.prev to (page > 0), R.id.next to (page < pages.size - 1))) {
@@ -761,13 +963,13 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         for (a in annotations) {
             val s0 = maxOf(a.start, start); val e0 = minOf(a.end, end)
             if (e0 <= s0) continue
-            sp.setSpan(BackgroundColorSpan(if (a.isNote) noteTint else bookmarkTint), s0 - start, e0 - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sp.setSpan(Mark(if (a.isNote) noteTint else bookmarkTint), s0 - start, e0 - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
-        // where you left off (where play continues): the exact sentence, underlined, while not reading
+        // where you left off (where play continues): the exact sentence, with a dotted underline, while not reading
         val leftOff = if (heardPos >= 0) heardPos else readPos
         if (!narrator.isPlaying && leftOff in start until end && leftOff > 0) {
             val (ls, le) = sentenceAroundIn(leftOff, start, end)
-            if (le > ls) sp.setSpan(android.text.style.UnderlineSpan(), ls - start, le - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (le > ls) sp.setSpan(Mark((th.accent and 0xFFFFFF) or (0x99 shl 24), 3, dotted = true), ls - start, le - start, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         for (c in book.chapters) {
             if (c.start < start || c.start >= end) continue
@@ -829,6 +1031,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             readPos = topVisibleOffset()
             saveProgress()
         }
+        if (bookId != null && pages.isNotEmpty() && busy.visibility != View.VISIBLE) pageLabel.text = labelFor(page)
     }
 
     private fun scrollToOffset(offset: Int, force: Boolean = false) {
@@ -906,6 +1109,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private fun onPlaybackChanged() {
         val playing = narrator.isPlaying
+        if (playing && !narrator.isPreviewing) showBars()   // following the voice: the bars stay
         syncMedia()
         if (playing && !narrator.isPreviewing) grabAudio() else releaseAudio()
         playBtn.setImageResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play)
@@ -920,18 +1124,25 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
     }
 
+    /** A small "Preparing voice…" pill above the player, only if the wait goes on (short waits show just the ring). */
+    private val showBufferPill = Runnable {
+        if (busy.visibility == View.VISIBLE && narrator.isPlaying) {
+            bufferPill.alpha = 0f
+            bufferPill.visibility = View.VISIBLE
+            bufferPill.animate().alpha(1f).setDuration(180).start()
+        }
+    }
+
     override fun onBuffering(waiting: Boolean) {
         val show = waiting && narrator.isPlaying
-        busy.visibility = if (show) android.view.View.VISIBLE else android.view.View.GONE
+        busy.visibility = if (show) View.VISIBLE else View.GONE
         val msg = if (narrator.isReady) "Preparing voice…" else "Loading voice model…"
+        bufferPill.removeCallbacks(showBufferPill)
         if (show) {
-            findViewById<TextView>(R.id.loadingText).text = msg
-            if (loadingOverlay.visibility != View.VISIBLE) {
-                loadingOverlay.alpha = 0f
-                loadingOverlay.visibility = View.VISIBLE
-                loadingOverlay.animate().alpha(1f).setDuration(150).start()
-            }
-        } else loadingOverlay.visibility = View.GONE
+            bufferPill.text = msg
+            if (bufferPill.visibility != View.VISIBLE) bufferPill.postDelayed(showBufferPill, 2000)
+        } else bufferPill.visibility = View.GONE
+        playBtn.contentDescription = if (show) "$msg Stop reading" else if (narrator.isPlaying) "Stop reading" else "Read aloud"
         if (show) pageLabel.text = msg
         else if (pages.isNotEmpty() && bookId != null) pageLabel.text = labelFor(page)
     }
@@ -978,11 +1189,12 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             val y = layout?.getLineTop(layout.getLineForOffset((spoken.first - pages[page]).coerceIn(0, pageView.text.length))) ?: 0
             y + pageView.paddingTop < scroll.scrollY
         }
-        jumpBack.setImageResource(if (up) R.drawable.ic_expand_less else R.drawable.ic_expand_more)
+        Icons.leading(jumpBack, if (up) R.drawable.ic_expand_less else R.drawable.ic_expand_more, th.onAccent, sizeDp = 22f, gapDp = 6f)
     }
 
     private fun returnToVoice() {
         follow = true
+        showBars()
         if (spoken.first < 0) return updateJumpBack()
         if (pageOf(spoken.first) != page) showPage(pageOf(spoken.first))
         highlightSpoken()
@@ -1008,11 +1220,19 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         topBar.setTitle(prefs.getString("title_$id", id), ch)
     }
 
+    /** Re-voices from the sentence being read so the new speed is heard right away (quick taps make one restart). */
+    private val applySpeed = Runnable {
+        if (narrator.isPlaying && !narrator.isPreviewing && !narrator.isPlayingFile) narrator.applyToPlaying()
+    }
+
     private fun setSpeed(v: Float) {
+        if (v == narrator.speed) return
         narrator.speed = v
         prefs.edit().putFloat("speed", v).apply()
         updateSpeedChip()
-        restartIfPlaying()
+        if (pages.isNotEmpty() && bookId != null && busy.visibility != View.VISIBLE) pageLabel.text = labelFor(page)
+        pageView.removeCallbacks(applySpeed)
+        pageView.postDelayed(applySpeed, 350)
     }
 
     /** Player-bar shortcut to pre-made audio, showing what's happening for this book. */
@@ -1032,8 +1252,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             here != null -> "Audio file" to R.drawable.ic_headphones
             else -> "Pre-load" to R.drawable.ic_download
         }
-        audioChip.text = label
-        audioChip.setCompoundDrawablesRelative(Icons.get(this, icon, th.accent, 16f), null, null, null)
+        // a narrow screen shows just the icon
+        val narrow = resources.configuration.screenWidthDp < 360
+        audioChip.text = if (narrow) "" else label
+        Icons.leading(audioChip, icon, th.accent, sizeDp = 16f, gapDp = if (narrow) 0f else 6f)
         audioChip.contentDescription = when {
             making != null -> "Audio file being made, ${(making.fraction * 100).toInt()} percent. Open audio files"
             here != null -> "This chapter plays from an audio file. Open audio files"
@@ -1079,63 +1301,76 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         speedChip.text = "${"%.2f".format(java.util.Locale.US, narrator.speed).trimEnd('0').trimEnd('.')}×"
     }
 
-    /** Speed sheet: big readout, 0.5x-2.0x slider in 0.05 steps, presets. Applied once on close. */
+    /** Speed sheet: big readout with −/+ steps, a 0.5×–2× slider and presets. Every change applies right away. */
     private fun pickSpeed() {
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
+        val ui = Ui(this, th)
         fun fmt(v: Float) = "${"%.2f".format(java.util.Locale.US, v).trimEnd('0').trimEnd('.')}×"
+        fun snap(v: Float) = (Math.round(v * 20) / 20f).coerceIn(0.5f, 2.0f)
         var chosen = narrator.speed
         val readout = TextView(this).apply {
-            textSize = 34f; gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(th.accent); text = fmt(chosen)
+            textSize = 40f; gravity = Gravity.CENTER; typeface = Typeface.DEFAULT_BOLD; setTextColor(th.accent)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
         val slider = SeekBar(this).apply {
             max = 30                                    // (2.0 - 0.5) / 0.05
-            progress = ((chosen - 0.5f) / 0.05f).toInt().coerceIn(0, 30)
+            minimumHeight = dp(40)
             progressTintList = ColorStateList.valueOf(th.accent)
             thumbTintList = ColorStateList.valueOf(th.accent)
+            progressBackgroundTintList = ColorStateList.valueOf(th.dim)
+            contentDescription = "Reading speed"
         }
-        val presets = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        fun select(v: Float) {
-            chosen = (Math.round(v * 20) / 20f).coerceIn(0.5f, 2.0f)
+        val presets = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false }
+        fun show(v: Float, apply: Boolean) {
+            chosen = snap(v)
             readout.text = fmt(chosen)
-            for (i in 0 until presets.childCount) (presets.getChildAt(i) as TextView).let { chip ->
-                val on = chip.tag == chosen
-                chip.setTextColor(if (on) th.onAccent else readout.currentTextColor.let { if (th.light) 0xFF333333.toInt() else 0xFFDDDDDD.toInt() })
-                chip.background = GradientDrawable().apply {
-                    cornerRadius = dp(16).toFloat()
-                    if (on) setColor(th.accent) else setStroke(dp(1), if (th.light) 0xFFBBBBBB.toInt() else 0xFF555B66.toInt())
-                }
+            readout.contentDescription = "Speed ${fmt(chosen)}"
+            slider.progress = Math.round((chosen - 0.5f) / 0.05f)
+            if (android.os.Build.VERSION.SDK_INT >= 30) slider.stateDescription = fmt(chosen)
+            for (i in 0 until presets.childCount) (presets.getChildAt(i) as TextView).let { c ->
+                val on = c.tag == chosen
+                c.setTextColor(if (on) th.onAccent else th.text)
+                c.background = android.graphics.drawable.RippleDrawable(ui.ripple(th.accent),
+                    if (on) ui.rounded(th.accent, 20) else ui.rounded(null, 20, th.outline), ui.rounded(-1, 20))
+                c.isSelected = on
             }
+            if (apply) setSpeed(chosen)
         }
-        for (v in floatArrayOf(0.8f, 1.0f, 1.25f, 1.5f, 1.75f)) presets.addView(TextView(this).apply {
-            text = fmt(v); tag = v; textSize = 14f; gravity = Gravity.CENTER
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            setOnClickListener { select(v); slider.progress = ((v - 0.5f) / 0.05f).toInt() }
-        }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4); marginEnd = dp(4) })
+        var dragging = false
         slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) { if (fromUser) select(0.5f + p * 0.05f) }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
+            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
+                // while dragging only the readout moves; TalkBack's steps (no drag) apply at once
+                if (fromUser) show(0.5f + p * 0.05f, apply = !dragging)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) { dragging = true }
+            override fun onStopTrackingTouch(sb: SeekBar) { dragging = false; show(0.5f + sb.progress * 0.05f, apply = true) }
         })
-        select(chosen)
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
-            addView(readout)
+        floatArrayOf(0.8f, 1.0f, 1.25f, 1.5f, 1.75f).forEachIndexed { i, v -> presets.addView(TextView(this).apply {
+            text = fmt(v); tag = v; textSize = 14f; gravity = Gravity.CENTER; minHeight = dp(44); isSingleLine = true
+            setOnClickListener { show(v, apply = true) }
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (i < 4) marginEnd = dp(8) }) }
+        val sheet = ui.sheet("Reading speed") {
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(ui.iconButton(R.drawable.ic_remove, "Slower", outlined = true) { show(chosen - 0.05f, apply = true) })
+                addView(readout, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(ui.iconButton(R.drawable.ic_add, "Faster", outlined = true) { show(chosen + 0.05f, apply = true) })
+            }, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12), dp(4), dp(12), 0) })
             addView(slider, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
-                val dim = if (th.light) 0xFF777777.toInt() else 0xFF8A94A6.toInt()
-                addView(TextView(this@MainActivity).apply { text = "0.5×"; textSize = 11f; setTextColor(dim) }, LinearLayout.LayoutParams(0, -2, 1f))
-                addView(TextView(this@MainActivity).apply { text = "2×"; textSize = 11f; setTextColor(dim); gravity = Gravity.END }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(TextView(this@MainActivity).apply { text = "0.5×"; textSize = 11.5f; setTextColor(th.dim) }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(TextView(this@MainActivity).apply { text = "2×"; textSize = 11.5f; setTextColor(th.dim); gravity = Gravity.END }, LinearLayout.LayoutParams(0, -2, 1f))
             }, LinearLayout.LayoutParams(-1, -2).apply { marginStart = dp(16); marginEnd = dp(16) })
-            addView(presets, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+            addView(presets, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(8), dp(16), dp(8), 0) })
+            addView(ui.hint(if (narrator.isPlayingFile) "This audio file plays at the speed it was made with. The new speed is for live reading."
+                else "Changes apply right away, from the sentence being read.").apply {
+                gravity = Gravity.CENTER; setPadding(dp(8), dp(14), dp(8), 0)
+            })
         }
-        Themes.dialog(this).setTitle("Reading speed").setView(box)
-            .setPositiveButton("Done") { _, _ -> if (chosen != narrator.speed) setSpeed(chosen) }
-            .setNegativeButton("Cancel", null)
-            .show()
+        show(chosen, apply = false)
+        sheet.show()
     }
 
     /** Jump narration one sentence back / forward (starts reading if stopped). */
@@ -1179,42 +1414,49 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private fun applyTheme() {
         th = Themes.current(this)
+        val ui = Ui(this, th)
+        val d = resources.displayMetrics.density
         Themes.applyChrome(this, th)
         findViewById<View>(R.id.root).background = Themes.pageBackground(this, th)
         pageView.setTextColor(th.text)
         pageView.highlightColor = th.selection
-        controls.background = GradientDrawable().apply {
+        // the player: bar color, rounded top, a hairline along its top edge (the side and bottom lines sit off-screen)
+        val hair = maxOf(1, (1 * d).toInt())
+        controls.background = android.graphics.drawable.InsetDrawable(GradientDrawable().apply {
             setColor(th.bar)
-            val r = 22 * resources.displayMetrics.density
+            val r = 22 * d
             cornerRadii = floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
-        }
+            setStroke(hair, th.outline)
+        }, -hair, 0, -hair, -hair)
         pageLabel.setTextColor(th.dim)
-        speedChip.setTextColor(th.accent)
-        audioChip.background = GradientDrawable().apply {
-            cornerRadius = 50f
-            setStroke((1.2f * resources.displayMetrics.density).toInt(), th.accent)
+        for (chip in listOf(speedChip, audioChip)) {
+            chip.setTextColor(th.text)
+            chip.typeface = ui.medium
+            chip.setPadding((12 * d).toInt(), 0, (12 * d).toInt(), 0)
+            chip.background = android.graphics.drawable.RippleDrawable(ui.ripple(th.accent), ui.rounded(th.surface, 18, th.outline), ui.rounded(-1, 18))
         }
-        audioChip.setTextColor(th.accent)
+        speedChip.contentDescription = "Reading speed"
         updateAudioChip()
-        speedChip.background = GradientDrawable().apply {
-            cornerRadius = 50f
-            setStroke((1.2f * resources.displayMetrics.density).toInt(), th.accent)
-        }
         for (id in intArrayOf(R.id.prev, R.id.next, R.id.back, R.id.fwd)) {
-            findViewById<ImageButton>(id).imageTintList = ColorStateList.valueOf(th.text)
+            findViewById<ImageButton>(id).apply {
+                imageTintList = ColorStateList.valueOf(th.text)
+                background = android.graphics.drawable.RippleDrawable(ui.ripple(th.text), null, ui.oval(-1))
+            }
         }
-        playBtn.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(th.accent) }
+        playBtn.background = android.graphics.drawable.RippleDrawable(ui.ripple(th.onAccent), ui.oval(th.accent), null)
         playBtn.imageTintList = ColorStateList.valueOf(th.onAccent)
         busy.indeterminateTintList = ColorStateList.valueOf(th.accent)
-        jumpBack.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(th.accent) }
-        jumpBack.imageTintList = ColorStateList.valueOf(th.onAccent)
-        loadingOverlay.background = GradientDrawable().apply { cornerRadius = 20 * resources.displayMetrics.density; setColor(th.bar) }
-        findViewById<ProgressBar>(R.id.loadingSpinner).indeterminateTintList = ColorStateList.valueOf(th.accent)
-        findViewById<TextView>(R.id.loadingText).setTextColor(th.text)
+        jumpBack.background = android.graphics.drawable.RippleDrawable(ui.ripple(th.onAccent), ui.rounded(th.accent, 22), null)
+        jumpBack.setTextColor(th.onAccent)
+        jumpBack.typeface = ui.medium
+        jumpBack.contentDescription = "Back to the sentence being read"
+        bufferPill.background = ui.rounded(th.surface, 18, th.outline)
+        bufferPill.setTextColor(th.text)
+        Icons.leading(bufferPill, R.drawable.ic_hourglass, th.accent, sizeDp = 16f, gapDp = 6f)
         // spans carry their own color: rebuild them and re-render the page
         (pageView.text as? Spannable)?.let { it.removeSpan(highlight); it.removeSpan(tapMark) }
-        highlight = BackgroundColorSpan(th.highlight)
-        tapMark = BackgroundColorSpan(th.selection)
+        highlight = Mark(th.highlight, 2)
+        tapMark = Mark(th.selection, 1)
         if (bookId != null && pages.isNotEmpty()) {
             val y = scroll.scrollY
             pageView.setText(styledPage(page), TextView.BufferType.SPANNABLE)
@@ -1224,6 +1466,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val shownTitle = if (::topBar.isInitialized) topBar.title.text to topBar.subtitle.text else null
         buildTopBar()
         if (bookId != null) updateHeader() else shownTitle?.let { (t, sub) -> topBar.setTitle(t, sub) } ?: topBar.setTitle("bagueration2.0")
+        if (bookId == null && emptyHolder.visibility == View.VISIBLE) showEmpty()
+        updateJumpBack()
     }
 
     private fun applyTypography() {
@@ -1232,6 +1476,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         pageView.setLineSpacing(0f, prefs.getFloat("spacing", 1.4f))
         pageView.justificationMode = if (prefs.getBoolean("justify", true))
             android.text.Layout.JUSTIFICATION_MODE_INTER_WORD else android.text.Layout.JUSTIFICATION_MODE_NONE
+        layoutPage()
         if (narrator.isPlaying) scrollToOffset(readPos)
     }
 
@@ -1271,7 +1516,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private var search: BookSearch? = null
     private var lastQuery = ""
     private var searchWholeBook = false
-    private var searchMark = BackgroundColorSpan(0)
+    private var searchMark = Mark(0, 1)
 
     /** Search this chapter or the whole book; tap a result to jump there. */
     private fun showSearch() {
@@ -1279,17 +1524,29 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val engine = search ?: BookSearch(text).also { search = it }
         val d = resources.displayMetrics.density
         fun dp(v: Int) = (v * d).toInt()
-        lateinit var dialog: android.app.AlertDialog
+        val ui = Ui(this, th)
+        lateinit var sheet: Ui.Sheet
         var hits: List<BookSearch.Hit> = emptyList()
 
         val input = android.widget.EditText(this).apply {
             setText(lastQuery); setSelection(lastQuery.length)
-            hint = "Search"; setSingleLine(); textSize = 16f
-            setTextColor(th.text); setHintTextColor(th.dim)
-            backgroundTintList = ColorStateList.valueOf(th.accent)
+            hint = "Search the book"; setSingleLine(); textSize = 16f
+            setTextColor(th.text); setHintTextColor(th.dim); highlightColor = th.selection
+            background = null; setPadding(0, dp(8), 0, dp(8))
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
         }
-        val count = TextView(this).apply { textSize = 12f; setTextColor(th.dim); setPadding(dp(4), dp(6), dp(4), dp(2)) }
+        val clear = ui.iconButton(R.drawable.ic_close, "Clear", tint = th.dim) { input.setText("") }
+        val field = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(52)
+            setPadding(dp(16), 0, dp(4), 0)
+            background = ui.rounded(th.surface, 26, th.outline)
+            addView(android.widget.ImageView(this@MainActivity).apply { setImageDrawable(Icons.get(this@MainActivity, R.drawable.ic_search, th.dim, 20f)) },
+                LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(12) })
+            addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(clear)
+        }
+        val count = TextView(this).apply { textSize = 12.5f; setTextColor(th.dim); setPadding(dp(8), dp(10), dp(8), dp(4)) }
         val adapter = object : android.widget.BaseAdapter() {
             override fun getCount() = hits.size
             override fun getItem(i: Int) = hits[i]
@@ -1303,9 +1560,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
                 }
                 return LinearLayout(this@MainActivity).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(dp(6), dp(10), dp(6), dp(10))
+                    minimumHeight = dp(48)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
                     if (searchWholeBook) book.chapters.getOrNull(chapterAt(hit.start))?.let { ch ->
-                        addView(TextView(this@MainActivity).apply { text = ch.title; textSize = 11f; setTextColor(th.dim); maxLines = 1 })
+                        addView(TextView(this@MainActivity).apply { text = ch.title; textSize = 11.5f; setTextColor(th.dim); maxLines = 1 })
                     }
                     addView(TextView(this@MainActivity).apply { text = sp; textSize = 14f; setTextColor(th.text); maxLines = 3 })
                 }
@@ -1313,11 +1571,14 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         val results = android.widget.ListView(this).apply {
             this.adapter = adapter; divider = null
-            setOnItemClickListener { _, _, i, _ -> dialog.dismiss(); jumpToMatch(hits[i]) }
+            selector = ui.pressable()
+            overScrollMode = View.OVER_SCROLL_NEVER
+            setOnItemClickListener { _, _, i, _ -> sheet.dismiss(); jumpToMatch(hits[i]) }
         }
         val run = Runnable {
             val q = input.text.toString()
             lastQuery = q
+            clear.visibility = if (q.isEmpty()) View.INVISIBLE else View.VISIBLE
             if (q.trim().length < 2) { hits = emptyList(); adapter.notifyDataSetChanged(); count.text = "Type at least 2 letters"; return@Runnable }
             val (from, to) = if (searchWholeBook) 0 to text.length else pages[page] to pageEnd(page)
             thread {
@@ -1338,32 +1599,27 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
-        // scope toggle
-        val scope = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
-        fun paintScope() {
-            for (i in 0 until scope.childCount) (scope.getChildAt(i) as TextView).let { c ->
-                val on = (i == 1) == searchWholeBook
-                c.setTextColor(if (on) th.onAccent else th.text)
-                c.background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); if (on) setColor(th.accent) else setStroke(dp(1), th.dim) }
-            }
+        input.setOnEditorActionListener { v, action, _ ->
+            if (action != android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) return@setOnEditorActionListener false
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(v.windowToken, 0)
+            input.removeCallbacks(run); run.run()
+            true
         }
-        for ((i, label) in listOf("This chapter", "Whole book").withIndex()) scope.addView(TextView(this).apply {
-            text = label; textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(12), dp(7), dp(12), dp(7))
-            setOnClickListener { searchWholeBook = i == 1; paintScope(); run.run() }
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
-        paintScope()
+        val scope = ui.chips(listOf("This chapter" to "chapter", "Whole book" to "book"), if (searchWholeBook) "book" else "chapter") {
+            searchWholeBook = it == "book"; run.run()
+        }
 
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), 0)
-            addView(input); addView(scope); addView(count)
-            addView(results, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.5).toInt()))
+        sheet = ui.sheet("Search", scroll = false, tall = true) {
+            addView(field, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(4), 0, dp(4), 0) })
+            addView(scope, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(4), dp(12), dp(4), 0) })
+            addView(count)
+            addView(results, LinearLayout.LayoutParams(-1, 0, 1f))
         }
-        dialog = Themes.dialog(this).setTitle("Search").setView(box).setNegativeButton("Close", null).create()
-        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
-        dialog.show()
+        @Suppress("DEPRECATION")
+        sheet.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        sheet.show()
         input.requestFocus()
-        if (lastQuery.isNotBlank()) run.run()
+        run.run()
     }
 
     private fun jumpToMatch(hit: BookSearch.Hit) {
@@ -1373,7 +1629,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (p != page) showPage(p)
         (pageView.text as? Spannable)?.let { sp ->
             sp.removeSpan(searchMark)
-            searchMark = BackgroundColorSpan(th.selection)
+            searchMark = Mark(th.selection, 1)
             val a = (hit.start - pages[page]).coerceIn(0, sp.length)
             val b = (hit.end - pages[page]).coerceIn(a, sp.length)
             sp.setSpan(searchMark, a, b, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -1388,10 +1644,6 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         updateJumpBack()
     }
 
-    private fun restartIfPlaying() {
-        if (narrator.isPlaying) startReading(readPos)
-    }
-
     private fun saveProgress() {
         bookId?.let {
             prefs.edit().putInt("pos_$it", readPos).putInt("heard_$it", heardPos)
@@ -1403,8 +1655,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     @Suppress("DEPRECATION")
     private fun setFullscreen(on: Boolean) {
         fullscreen = on
-        findViewById<android.view.View>(R.id.controls).visibility = if (on) android.view.View.GONE else android.view.View.VISIBLE
-        topBar.view.visibility = if (on) View.GONE else View.VISIBLE
+        barsHidden = on
+        slideBars(on)
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.let { c ->
                 if (on) {
@@ -1417,7 +1669,16 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             val v = window.decorView.systemUiVisibility
             window.decorView.systemUiVisibility = if (on) v or hide else v and hide.inv()
         }
-        if (on) Toast.makeText(this, "Tap anywhere to show the controls", Toast.LENGTH_SHORT).show()
+        // say how to get out, the first time only
+        if (on && !prefs.getBoolean("fullscreen_tip_seen", false)) {
+            prefs.edit().putBoolean("fullscreen_tip_seen", true).apply()
+            Toast.makeText(this, "Tap anywhere to show the controls", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        scroll.post { layoutPage(); updateProgressLine(); updateAudioChip() }
     }
 
     @Deprecated("Deprecated in Java")

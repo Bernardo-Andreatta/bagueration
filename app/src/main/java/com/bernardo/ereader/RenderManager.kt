@@ -151,6 +151,10 @@ object RenderManager {
         ))
     }
 
+    /** Rough spoken length of [chars] of text: ~14.5 chars a second at 1×, plus a pause per sentence (~90 chars). */
+    fun estimateMs(chars: Int, speed: Float, pauseMs: Int): Long =
+        (chars / (14.5 * speed) * 1000).toLong() + chars / 90 * pauseMs
+
     fun formatDuration(ms: Long): String {
         val min = (ms / 60_000).toInt()
         return if (min >= 60) "${min / 60} h ${min % 60} min" else if (min >= 1) "$min min" else "${ms / 1000} s"

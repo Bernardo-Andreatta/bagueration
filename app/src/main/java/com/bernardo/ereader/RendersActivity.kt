@@ -402,7 +402,7 @@ class RendersActivity : Activity() {
         var lengthMin = 0   // 0 = until a chapter
 
         fun chapterEnd(i: Int) = if (i + 1 < chapters.size) chapters[i + 1].start else bookText.length
-        fun msFor(chars: Int) = (chars / (14.5 * preset.speed) * 1000).toLong() + chars / 90 * preset.pauseMs  // ~1 sentence per 90 chars
+        fun msFor(chars: Int) = RenderManager.estimateMs(chars, preset.speed, preset.pauseMs)
         fun range(): Pair<Int, Int> {
             val from = chapters[fromIdx].start
             if (lengthMin == 0) return from to chapterEnd(toIdx)
