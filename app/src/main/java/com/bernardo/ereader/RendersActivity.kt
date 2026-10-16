@@ -11,6 +11,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
 /**
  * Pre-loaded audio for a book: chapters (or a length) made ahead of time with the current voice and settings, so
@@ -446,6 +447,29 @@ class RendersActivity : Activity() {
             return if (existing.any { overlaps(it, s, e) }) "some" else null
         }
         val prepared = chapters.indices.map(::preparedState)
+        fun chapterAt(pos: Int) = chapters.indexOfLast { it.start <= pos }.coerceAtLeast(0)
+        val sameSettings = existing.filter { it.voiceId == voice.id && it.settings == settings && it.status != "failed" }
+
+        /**
+         * What pre-loading [from, to) means, given what's already pre-loaded with these very settings: nothing (it's
+         * all there), adding the rest to a file that ends inside the selection, making only the part before a file
+         * that covers the end, or a new file (a copy, when only other settings cover it).
+         */
+        class Plan(val kind: String, val from: Int, val to: Int, val extend: Render? = null, val note: String = "")
+        fun plan(from: Int, to: Int): Plan {
+            if (byLength) return Plan("new", from, to)
+            if (sameSettings.any { it.fromChar <= from && it.toChar >= to })
+                return Plan("dup", from, from, note = "Already pre-loaded with these settings.")
+            val ext = sameSettings.filter { it.fromChar <= from && it.toChar > from && it.toChar < to }.maxByOrNull { it.toChar }
+            if (ext != null) return Plan("extend", ext.toChar, to, ext,
+                "Up to ${chapterShort(chapterAt(ext.toChar - 1))} is already pre-loaded with these settings: the rest is added to that file.")
+            val tail = sameSettings.filter { it.fromChar > from && it.fromChar < to && it.toChar >= to }.minByOrNull { it.fromChar }
+            if (tail != null) return Plan("partial", from, tail.fromChar,
+                note = "From ${chapterShort(chapterAt(tail.fromChar))} on is already pre-loaded with these settings: only the chapters before it are made.")
+            val other = existing.any { overlaps(it, from, to) && (it.voiceId != voice.id || it.settings != settings) }
+            return Plan("new", from, to, note = if (other) "Already pre-loaded with another voice or settings: this makes a new copy." else "")
+        }
+        lateinit var makeBtn: TextView
 
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val lengthChips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; isBaselineAligned = false }
@@ -485,15 +509,18 @@ class RendersActivity : Activity() {
                     if (on) ui.rounded(th.accent, 20) else ui.rounded(null, 20, th.outline), ui.rounded(-1, 20))
                 c.isSelected = on
             }
-            val audio = msFor(to - from)
+            val pl = plan(from, to)
+            val audio = msFor(pl.to - pl.from)
             val rtf = Narrator.instance?.currentRtf ?: 0.7
             val n = inRange.size
             summary.text = if (byLength) "About ${RenderManager.formatDuration(audio)}, from ${chapterName(fromIdx)}"
-                else "${if (n == 1) "1 chapter" else "$n chapters"} · about ${RenderManager.formatDuration(audio)}"
-            val dup = existing.any { it.voiceId == voice.id && it.settings == settings && it.fromChar <= from && it.toChar >= to }
-            details.text = (if (dup) "Already pre-loaded with this voice: this makes another copy.\n" else "") +
+                else "${if (n == 1) "1 chapter" else "$n chapters"}" + if (pl.kind == "dup") "" else " · about ${RenderManager.formatDuration(audio)} to make"
+            details.text = (if (pl.note.isNotEmpty()) pl.note + "\n" else "") + (if (pl.kind == "dup") "" else
                 "${audio / 60_000 / 2 + 1} MB · takes about ${RenderManager.formatDuration((audio * rtf).toLong())} on this phone; " +
-                "you can listen after a couple of minutes.\n${voice.name} · ${preset.describe()} (change in Settings)"
+                "you can listen after a couple of minutes.\n") + "${voice.name} · ${preset.describe()} (change in Settings)"
+            makeBtn.text = when (pl.kind) { "dup" -> "Already pre-loaded"; "extend" -> "Add chapters"; else -> "Pre-load" }
+            makeBtn.contentDescription = makeBtn.text
+            makeBtn.alpha = if (pl.kind == "dup") 0.5f else 1f
         }
 
         /** Checkbox-style range picking: outside extends, an end unchecks itself, the middle trims the end there. */
@@ -570,15 +597,26 @@ class RendersActivity : Activity() {
 
         lateinit var sheet: Ui.Sheet
         fun make() {
-            val (from, to) = range()
-            val label = when {
-                byLength -> "${chapterShort(fromIdx)} · ${RenderManager.formatDuration(lengthMin * 60_000L)}"
-                fromIdx == toIdx -> chapterShort(fromIdx)
-                else -> "${chapterShort(fromIdx)} – ${chapterShort(toIdx)}"
+            val (selFrom, selTo) = range()
+            val pl = plan(selFrom, selTo)
+            if (pl.kind == "dup") {
+                Toast.makeText(this, "These chapters are already pre-loaded with the current settings.", Toast.LENGTH_SHORT).show()
+                return
+            }
+            fun labelFor(from: Int, to: Int): String {
+                val a = chapterAt(from); val b = chapterAt(to - 1)
+                return if (a == b) chapterShort(a) else "${chapterShort(a)} – ${chapterShort(b)}"
             }
             // preparing something new turns pre-loaded audio back on in a book set to read live
             if (Renders.activeId(this, bookId) == Renders.LIVE) Renders.setActive(this, bookId, null)
-            val r = Render("r" + System.currentTimeMillis(), bookId, from, to, label, voice.id, settings, "processing", 0, System.currentTimeMillis())
+            val ext = pl.extend
+            val r = if (ext != null) {
+                // the file that already covers the start grows: making resumes at its end, keeping its parts
+                ext.copy(toChar = pl.to, label = labelFor(ext.fromChar, pl.to), status = "processing", doneChar = ext.coveredTo)
+            } else {
+                val label = if (byLength) "${chapterShort(fromIdx)} · ${RenderManager.formatDuration(lengthMin * 60_000L)}" else labelFor(pl.from, pl.to)
+                Render("r" + System.currentTimeMillis(), bookId, pl.from, pl.to, label, voice.id, settings, "processing", 0, System.currentTimeMillis())
+            }
             RenderManager.enqueue(this, r, bookText, specFrom(voice.id, settings))
             sheet.dismiss()
             render()
@@ -597,7 +635,7 @@ class RendersActivity : Activity() {
             addView(LinearLayout(this@RendersActivity).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END or Gravity.CENTER_VERTICAL
                 addView(ui.pill("Cancel", null, filled = false) { sheet.dismiss() }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
-                addView(ui.pill("Pre-load", R.drawable.ic_download, filled = true) { make() })
+                addView(ui.pill("Pre-load", R.drawable.ic_download, filled = true) { make() }.also { makeBtn = it })
             }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
         })
         sheet = ui.sheet("Pre-load chapters", scroll = false, tall = tall) {
