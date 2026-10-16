@@ -124,7 +124,7 @@ Ranked by value for effort. All open source unless noted.
 
 ## Cheap, built into Android (no new dependency)
 
-1. **`android.icu.text.RuleBasedNumberFormat` (SPELLOUT)** — spells numbers, ordinals and years in the book's language ("1.234" → "mil duzentos e trinta e quatro", "3rd" → "third"). Replaces hand-written English-only number rules in `SpokenText` for every language the voices speak, including Hindi and Chinese. API 24+, already on the phone.
+1. ~~**`android.icu.text.RuleBasedNumberFormat` (SPELLOUT)**~~ — would spell numbers and ordinals in any language, but it turned out not to be part of the public Android SDK (only ICU's `NumberFormat`, `BreakIterator`, `DateFormat`... are). Done instead with a small hand-written `Ordinals.kt` (1–100, gendered, pt/es/fr/it/de); plain cardinals are left as digits, which the voices already read in their own language.
 2. **`android.icu.text.BreakIterator.getSentenceInstance(locale)`** — locale-aware sentence boundaries (handles "Sr.", "Dr.", "etc.", "…", CJK punctuation, Devanagari danda). Use it as the first pass in `Narrator`'s sentence splitter and in `MainActivity.sentenceAround`, keeping the current quote/paragraph tweaks on top.
 3. **`TextView.textLocale`** — hyphenation and line breaking in the book's language (phase 2).
 4. **`AudioTrack.setPlaybackParams(PlaybackParams().setSpeed(x))`** — time-stretch without pitch change. Lets a pre-made audio file play at any speed instead of baking the speed in, and lets speed changes apply instantly on cached audio without re-rendering. Worth a setting "speed changes re-render (best quality) / stretch (instant)".

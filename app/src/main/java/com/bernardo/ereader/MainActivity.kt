@@ -219,6 +219,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         row.animate().alpha(if (hide) 0f else 1f).setDuration(dur)
             .withEndAction { if (barsHidden) row.visibility = View.INVISIBLE }.start()
         dock.animate().translationY(if (hide) controls.height.toFloat() else 0f).setDuration(dur).setInterpolator(interp).start()
+        // the pills above the player ride down with it; keep them clear of the navigation bar
+        for (pill in listOf(jumpBack, bufferPill)) {
+            pill.animate().translationY(if (hide) -bars.bottom.toFloat() else 0f).setDuration(dur).setInterpolator(interp).start()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -353,7 +357,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (isOver(jumpBack, e) || isOver(bufferPill, e) || isOver(controls, e) || isOver(topBar.view, e)) return false
+                if (downOnChrome) return false
                 if (fullscreen) { setFullscreen(false); return true }   // tap anywhere brings the controls back
                 showBars()
                 if (bookId == null || jumpPopup != null) return false
@@ -596,7 +600,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     private var swallowGesture = false
 
+    /** The touch started on a button or bar, not the page: a tap there never opens the sentence bubble. */
+    private var downOnChrome = false
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // decided when the finger lands: by the time a single tap is confirmed, "Back to the voice" has already
+        // hidden itself, and the tap used to fall through to the sentence under it
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            downOnChrome = isOver(jumpBack, ev) || isOver(bufferPill, ev) || isOver(controls, ev) || isOver(topBar.view, ev)
+        }
         if (swallowGesture) {
             gestures.onTouchEvent(ev)
             if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
@@ -1336,8 +1348,9 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     /** Re-voices from the sentence being read so the new speed is heard right away (quick taps make one restart). */
+    /** Live reading re-renders from the sentence being heard; a pre-made file is stretched in place. */
     private val applySpeed = Runnable {
-        if (narrator.isPlaying && !narrator.isPreviewing && !narrator.isPlayingFile) narrator.applyToPlaying()
+        if (narrator.isPlaying && !narrator.isPreviewing) narrator.applyToPlaying()
     }
 
     private fun setSpeed(v: Float) {
