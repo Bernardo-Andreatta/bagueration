@@ -15,16 +15,27 @@ import android.os.PowerManager
 /** Runs audio-file jobs one at a time (queueing the rest) and reports progress to the UI and a notification. */
 object RenderManager {
 
-    class Progress(@Volatile var render: Render, val startedAt: Long) {
+    class Progress(@Volatile var render: Render, val startedAt: Long, private val spec: Narrator.RenderSpec, private val ctx: Context) {
         /** Where this run started (a file can be continued after a pause), for the time-left estimate. */
         private val startFraction = render.fraction
         @Volatile var fraction = startFraction
         @Volatile var audioMs = render.durationMs
-        /** Time left, from the pace so far (null until there's enough to tell). */
-        val etaMs: Long? get() {
+        /**
+         * Time left: the same rough estimate the sheet showed before starting (text left × the phone's generation
+         * speed, doubled in gentle mode), trusted more and more in favour of the pace actually measured as the
+         * minutes go by. Starting from the measured pace alone read "3 s", then "10 s", then "1 min": the first
+         * sentences are short, or come from the cache.
+         */
+        val etaMs: Long get() {
+            val left = ((1 - fraction) * (render.toChar - render.fromChar)).toInt().coerceAtLeast(0)
+            val gentle = if (BookStore.prefs(ctx).getBoolean("render_gentle", false)) 2.0 else 1.0
+            val prior = (estimateMs(left, spec.speed, spec.pauseMs) * (Narrator.instance?.currentRtf ?: 0.7) * gentle).toLong()
             val elapsed = System.currentTimeMillis() - startedAt
             val done = fraction - startFraction
-            return if (done < 0.02f) null else (elapsed * (1 - fraction) / done).toLong()
+            if (done < 0.02f || elapsed < 30_000) return prior
+            val measured = (elapsed * (1 - fraction) / done).toLong()
+            val w = (elapsed / 300_000.0).coerceAtMost(1.0)   // the measured pace counts fully after five minutes
+            return (prior * (1 - w) + measured * w).toLong()
         }
     }
 
@@ -100,7 +111,7 @@ object RenderManager {
         // sentences of the kept parts only (a part being written when the app was closed is made again)
         val sync = Renders.readSync(ctx, r.id).filter { it.ms < r.durationMs && it.start < r.doneChar }.toMutableList()
         val firstPart = r.parts.size
-        val p = Progress(r, System.currentTimeMillis())
+        val p = Progress(r, System.currentTimeMillis(), job.spec, ctx.applicationContext)
         current = p
         pausing = null
         Renders.dir(ctx, r.id).mkdirs()
@@ -180,7 +191,7 @@ class RenderService : Service() {
         fun update(ctx: Context, p: RenderManager.Progress) {
             val pct = (p.fraction * 100).toInt()
             val ready = p.render.durationMs.takeIf { it > 0 }?.let { " · ${RenderManager.formatDuration(it)} ready to play" } ?: ""
-            val eta = ready + (p.etaMs?.let { " · about ${RenderManager.formatDuration(it)} left" } ?: "")
+            val eta = ready + " · about ${RenderManager.formatDuration(p.etaMs)} left"
             ctx.getSystemService(NotificationManager::class.java)
                 .notify(NOTIF, build(ctx, "Pre-loading audio: $title", "$pct%$eta", pct, ongoing = true))
         }
