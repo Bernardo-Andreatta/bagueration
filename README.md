@@ -11,7 +11,8 @@ An Android e-reader that reads your books aloud with natural-sounding voices, en
 - **Detects each book's language** and suggests voices in that language first.
 - **Tuning**: speed, pauses between sentences and at commas, trimming of mid-sentence hesitations, phrasing length, voice blends, per-voice recommended settings and your own saved presets.
 - **Pronunciation fixes** for names the voice gets wrong, per book or for all books.
-- **Pre-made audio files**: render chapters (or a set length) ahead of time with any voice and settings. They're compressed AAC with a sentence sync map, play with no loading and keep the highlight in step. Several files per book are fine.
+- **Reads book typography the way a narrator would**, in English, Portuguese, Spanish, French, Italian and German: "Chapter IV", "Henry VIII" / "Luís XIV" / "Ludwig XIV", years and ranges, money, "3º", "1re", "XIXe siècle", "século XIX", and the usual abbreviations ("Sra.", "n.º 5", "z.B.") without cutting the sentence there.
+- **Pre-made audio files**: render chapters (or a set length) ahead of time with any voice and settings. They're compressed AAC with a sentence sync map, play with no loading and keep the highlight in step. Several files per book are fine, and they follow the speed you pick (time-stretched, pitch kept), so a file made at 1× plays at 1.5× without being made again.
 - **Smart buffering**: reads ahead by time (scaled to the phone's memory), keeps preparing while paused, and caches generated audio on disk.
 - **Bookmarks, notes and a "left off here" marker**, plus a Contents panel (chapters, bookmarks, notes).
 - **Reading**: chapter-per-page scrolling, search (chapter or whole book, accent-insensitive), five themes plus custom colors, font, size and spacing.
