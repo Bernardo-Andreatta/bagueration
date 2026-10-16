@@ -38,6 +38,11 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
          * [onSentence]. At most ~15 times a second, only while [wordHighlight] is on; (-1, -1) = none.
          */
         fun onWord(start: Int, end: Int)
+        /**
+         * The silence after a sentence has just started to play and lasts about [ms]; the next sentence begins at or
+         * after [nextStart]. The reader scrolls in these gaps, so the page never moves under words being read.
+         */
+        fun onGap(nextStart: Int, ms: Int) {}
         /** true while waiting for audio (model loading or synthesis falling behind). */
         fun onBuffering(waiting: Boolean)
         fun onFinished()
@@ -387,6 +392,11 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                 val pos = positionMs()
                 val idx = indexAt(sync, pos)
                 if (idx != shown) { shown = idx; listener.onSentence(sync[idx].start, sync[idx].end) }
+                // the pause before the next sentence (the file was made with [madePause] between sentences)
+                if (idx + 1 < sync.size && gapTold != idx && pos >= sync[idx + 1].ms - madePause) {
+                    gapTold = idx
+                    listener.onGap(sync[idx + 1].start, madePause.toInt())
+                }
                 if (wordHighlight && raw.isNotEmpty()) {
                     val k = indexAt(raw, pos)
                     if (k != wordsFor) { wordsFor = k; words = wordsAt(k) }
@@ -423,6 +433,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
 
         /** The speed the file was made at; the player stretches it to the speed chosen now. */
         private val madeAt = VoicePreset.parse(r.settings)?.speed ?: 1f
+        private val madePause = (VoicePreset.parse(r.settings)?.pauseMs ?: 400).toLong()
+        private var gapTold = -1
         private var rate = 1f
 
         /**
@@ -1304,6 +1316,13 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                     }
                     // pause before the next sentence (written as silence so it stays in sync with the highlight)
                     var silence = (rate * (if (c.clause) cCommaPause else cPause) / 1000f * c.pauseFactor).toInt()
+                    if (!c.clause && silence > 0 && !preview && c.samples.isNotEmpty()) {
+                        // the track plays behind what was written: tell the reader when the gap is actually heard
+                        val lagMs = ((written - track.playbackHeadPosition.toLong()).coerceAtLeast(0) * 1000 / rate)
+                        val gapMs = silence * 1000 / rate
+                        val next = c.end
+                        main.postDelayed({ if (!cancelled) listener.onGap(next, gapMs) }, lagMs)
+                    }
                     while (silence > 0 && !cancelled) {
                         val n = minOf(silenceBuf.size, silence)
                         track.write(silenceBuf, 0, n, AudioTrack.WRITE_BLOCKING)
