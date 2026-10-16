@@ -38,17 +38,34 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
     private val rect = RectF()
     private val clip = Rect()
     private val visible = Rect()
+    /** The band of the view the last drawing covered (view coordinates); -1 = everything. */
+    private var drawnTop = -1
+    private var drawnBottom = -1
+
+    /**
+     * True when the part on screen has moved outside what was last drawn and the view must be redrawn. The reader
+     * asks on every scroll: redrawing only then (not every frame) is what keeps a glide smooth on a 120 Hz screen.
+     */
+    fun needsRedraw(): Boolean {
+        if (drawnTop < 0) return false
+        if (!getLocalVisibleRect(visible)) return false
+        // the margin is a screen on each side: redraw once the visible part is within half a screen of the edge
+        val slack = visible.height() / 2
+        return visible.top < drawnTop + slack || visible.bottom > drawnBottom - slack
+    }
 
     override fun onDraw(canvas: Canvas) {
         // A chapter is one tall view inside the scroll view. Without this clip, every redraw (a word mark fifteen times
         // a second, a new sentence) recorded all of the chapter's lines, which stuttered while the page glided. Only
-        // the lines on screen (plus a margin) are drawn, and the reader redraws the view as it scrolls.
+        // the lines on screen, plus a screen above and below, are drawn.
         if (getLocalVisibleRect(visible)) {
             // vertical only: while a chapter slides in sideways the visible rect is shifted, and clipping the sides
             // too left a blank band over the text
-            val margin = (lineHeight * 2).coerceAtLeast(64)
-            canvas.clipRect(0, visible.top - margin, width, visible.bottom + margin)
-        }
+            val margin = visible.height().coerceAtLeast(lineHeight * 4)
+            drawnTop = visible.top - margin
+            drawnBottom = visible.bottom + margin
+            canvas.clipRect(0, drawnTop, width, drawnBottom)
+        } else { drawnTop = -1; drawnBottom = -1 }
         val layout = layout
         val t = text as? Spanned
         if (layout != null && t != null) {
