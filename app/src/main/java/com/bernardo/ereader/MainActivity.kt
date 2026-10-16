@@ -63,6 +63,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     private lateinit var jumpBack: TextView
     private lateinit var dock: LinearLayout
     private lateinit var bufferPill: TextView
+    private lateinit var loadingOverlay: LinearLayout
     private lateinit var emptyHolder: android.widget.FrameLayout
     private lateinit var progressLine: View
     /** Auto-scroll with the voice; turned off when you scroll or change chapter yourself. */
@@ -242,6 +243,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         jumpBack = findViewById(R.id.jumpBack)
         dock = findViewById(R.id.dock)
         bufferPill = findViewById(R.id.bufferPill)
+        loadingOverlay = findViewById(R.id.loadingOverlay)
         emptyHolder = findViewById(R.id.emptyHolder)
         jumpBack.setOnClickListener { returnToVoice() }
         scroll.setOnTouchListener { _, ev ->
@@ -616,7 +618,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         // decided when the finger lands: by the time a single tap is confirmed, "Back to the voice" has already
         // hidden itself, and the tap used to fall through to the sentence under it
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
-            downOnChrome = isOver(jumpBack, ev) || isOver(bufferPill, ev) || isOver(controls, ev) || isOver(topBar.view, ev)
+            downOnChrome = isOver(jumpBack, ev) || isOver(bufferPill, ev) || isOver(loadingOverlay, ev) || isOver(controls, ev) || isOver(topBar.view, ev)
         }
         if (swallowGesture) {
             gestures.onTouchEvent(ev)
@@ -1230,11 +1232,16 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         busy.visibility = if (show) View.VISIBLE else View.GONE
         val msg = if (narrator.isReady) "Preparing voice…" else "Loading voice model…"
         bufferPill.removeCallbacks(showBufferPill)
+        bufferPill.visibility = View.GONE
+        // a centered card, right away: the small pill went unnoticed and people tapped play and pause again and again
         if (show) {
-            bufferPill.text = msg
-            // together with the player's own "Preparing voice…" label, not two seconds after it
-            if (bufferPill.visibility != View.VISIBLE) bufferPill.postDelayed(showBufferPill, 250)
-        } else bufferPill.visibility = View.GONE
+            findViewById<TextView>(R.id.loadingText).text = msg
+            if (loadingOverlay.visibility != View.VISIBLE) {
+                loadingOverlay.alpha = 0f
+                loadingOverlay.visibility = View.VISIBLE
+                loadingOverlay.animate().alpha(1f).setDuration(150).start()
+            }
+        } else loadingOverlay.visibility = View.GONE
         playBtn.contentDescription = if (show) "$msg Stop reading" else if (narrator.isPlaying) "Stop reading" else "Read aloud"
         if (show) pageLabel.text = msg
         else if (pages.isNotEmpty() && bookId != null) pageLabel.text = labelFor(page)
@@ -1642,6 +1649,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         jumpBack.setTextColor(th.onAccent)
         jumpBack.typeface = ui.medium
         jumpBack.contentDescription = "Back to the sentence being read"
+        loadingOverlay.background = ui.rounded(th.bar, 22, th.outline)
+        findViewById<ProgressBar>(R.id.loadingSpinner).indeterminateTintList = ColorStateList.valueOf(th.accent)
+        findViewById<TextView>(R.id.loadingText).setTextColor(th.text)
+        findViewById<TextView>(R.id.loadingHint).setTextColor(th.dim)
         bufferPill.background = ui.rounded(th.surface, 18, th.outline)
         bufferPill.setTextColor(th.text)
         Icons.leading(bufferPill, R.drawable.ic_hourglass, th.accent, sizeDp = 16f, gapDp = 6f)

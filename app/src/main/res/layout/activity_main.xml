@@ -25,6 +25,41 @@
             android:textIsSelectable="true" />
     </ScrollView>
 
+    <!-- centered "preparing voice" card while audio is being made: big enough that nobody taps play again -->
+    <LinearLayout
+        android:id="@+id/loadingOverlay"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:elevation="8dp"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:paddingHorizontal="32dp"
+        android:paddingVertical="24dp"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/loadingSpinner"
+            android:layout_width="52dp"
+            android:layout_height="52dp"
+            android:indeterminate="true" />
+
+        <TextView
+            android:id="@+id/loadingText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/loadingHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="It starts in a moment"
+            android:textSize="13sp" />
+    </LinearLayout>
+
     <!-- shown instead of the page when no book is open -->
     <FrameLayout
         android:id="@+id/emptyHolder"
