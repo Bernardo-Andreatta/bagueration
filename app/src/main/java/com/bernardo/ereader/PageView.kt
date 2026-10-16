@@ -57,6 +57,13 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
         return visible.top < drawnTop + slack || visible.bottom > drawnBottom - slack
     }
 
+    /**
+     * A selectable TextView asks its scroll view to show the cursor after a relayout, and with no selection the
+     * cursor sits at the start: the page jumped to the top. Only a real selection may ask.
+     */
+    override fun requestRectangleOnScreen(rectangle: Rect, immediate: Boolean): Boolean =
+        if (selectionStart == selectionEnd) false else super.requestRectangleOnScreen(rectangle, immediate)
+
     override fun onDraw(canvas: Canvas) {
         // A chapter is one tall view inside the scroll view. Without this clip, every redraw (a word mark fifteen times
         // a second, a new sentence) recorded all of the chapter's lines, which stuttered while the page glided. Only

@@ -568,11 +568,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (cur != null && cur.length == fresh.length) {
             // swap the marks on the text already shown: setText on a selectable TextView puts the cursor back at the
             // start and scrolls the page to the top (pausing did that, to add the left-off underline)
+            // only the appearance spans (marks, colors): bold, sizes and alignment don't change between refreshes, and
+            // touching them forces a relayout, after which the selectable TextView asks to show its cursor (at the
+            // start) and the page jumps to the top
+            fun appearanceOnly(s: Any) = s is CharacterStyle && s !is android.text.style.UpdateLayout && s !is ParagraphStyle
             for (s in cur.getSpans(0, cur.length, Any::class.java)) {
-                if ((s is CharacterStyle || s is ParagraphStyle) && s !== highlight && s !== wordMark && s !== tapMark) cur.removeSpan(s)
+                if (appearanceOnly(s) && s !== highlight && s !== wordMark && s !== tapMark) cur.removeSpan(s)
             }
             for (s in fresh.getSpans(0, fresh.length, Any::class.java)) {
-                cur.setSpan(s, fresh.getSpanStart(s), fresh.getSpanEnd(s), fresh.getSpanFlags(s))
+                if (appearanceOnly(s)) cur.setSpan(s, fresh.getSpanStart(s), fresh.getSpanEnd(s), fresh.getSpanFlags(s))
             }
         } else {
             val y = scroll.scrollY
