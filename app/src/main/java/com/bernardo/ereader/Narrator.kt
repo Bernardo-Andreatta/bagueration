@@ -558,6 +558,10 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         }
     }
 
+    /** The phone's thermal status (Android 10+), 0 = none; used to slow pre-loading down before it throttles. */
+    private fun thermalLevel(): Int = if (android.os.Build.VERSION.SDK_INT < 29) 0 else
+        runCatching { ctx.getSystemService(android.os.PowerManager::class.java).currentThermalStatus }.getOrDefault(0)
+
     /** espeak-ng needs real files on disk, so copy them out of the APK once. */
     private fun copyAssetDir(assetPath: String, outName: String): String {
         File(ctx.filesDir, "espeak-ng-data").takeIf { it.exists() }?.deleteRecursively() // v0.19 leftovers
@@ -958,6 +962,15 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                 val genMs = (System.nanoTime() - t0) / 1_000_000.0
                                 val audioMs = audio.samples.size * 1000.0 / audio.sampleRate
                                 if (audioMs > 300) rtf = rtf * 0.8 + (genMs / audioMs) * 0.2
+                                // pre-loading: in gentle mode (a switch, read live so it applies at once) it rests as
+                                // long as it worked; any pre-load backs off when the phone reports it's getting hot.
+                                // The live voice never waits here.
+                                if (rendering && !cancelled) {
+                                    val gentle = BookStore.prefs(ctx).getBoolean("render_gentle", false)
+                                    val hot = thermalLevel() >= android.os.PowerManager.THERMAL_STATUS_SEVERE
+                                    val restMs = (if (gentle) genMs else 0.0) + (if (hot) 3000.0 else 0.0)
+                                    if (restMs > 0) runCatching { Thread.sleep(restMs.toLong().coerceAtMost(15_000)) }
+                                }
                                 val c = Cached(samples, audio.sampleRate)
                                 if (!rendering) {   // renders don't push live audio out of the caches
                                     cachePut(key, c)   // keep it even if this session was cancelled

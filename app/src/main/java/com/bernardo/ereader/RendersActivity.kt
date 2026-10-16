@@ -513,11 +513,14 @@ class RendersActivity : Activity() {
             val audio = msFor(pl.to - pl.from)
             val rtf = Narrator.instance?.currentRtf ?: 0.7
             val n = inRange.size
-            summary.text = if (byLength) "About ${RenderManager.formatDuration(audio)}, from ${chapterName(fromIdx)}"
-                else "${if (n == 1) "1 chapter" else "$n chapters"}" + if (pl.kind == "dup") "" else " · about ${RenderManager.formatDuration(audio)} to make"
+            val gentle = BookStore.prefs(this).getBoolean("render_gentle", false)
+            val makeMs = (audio * rtf * (if (gentle) 2 else 1)).toLong()
+            summary.text = if (byLength) "About ${RenderManager.formatDuration(audio)} of audio, from ${chapterName(fromIdx)}"
+                else "${if (n == 1) "1 chapter" else "$n chapters"}" + if (pl.kind == "dup") "" else " · about ${RenderManager.formatDuration(audio)} of audio"
             details.text = (if (pl.note.isNotEmpty()) pl.note + "\n" else "") + (if (pl.kind == "dup") "" else
-                "${audio / 60_000 / 2 + 1} MB · takes about ${RenderManager.formatDuration((audio * rtf).toLong())} on this phone; " +
-                "you can listen after a couple of minutes.\n") + "${voice.name} · ${preset.describe()} (change in Settings)"
+                "${audio / 60_000 / 2 + 1} MB · about ${RenderManager.formatDuration(makeMs)} to make on this phone" +
+                (if (gentle) " (gentle)" else "") + "; you can listen after a couple of minutes.\n") +
+                "${voice.name} · ${preset.describe()} (change in Settings)"
             makeBtn.text = when (pl.kind) { "dup" -> "Already pre-loaded"; "extend" -> "Add chapters"; else -> "Pre-load" }
             makeBtn.contentDescription = makeBtn.text
             makeBtn.alpha = if (pl.kind == "dup") 0.5f else 1f
@@ -631,6 +634,11 @@ class RendersActivity : Activity() {
         body.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(12), dp(8), 0)
+            // gentle: half speed, much less heat; good while charging overnight. Applies to everything being pre-loaded.
+            addView(ui.switchRow("Gentle: slower, stays cool", BookStore.prefs(this@RendersActivity).getBoolean("render_gentle", false),
+                "Rests between sentences, about half speed. Good while the phone is charging.") { on ->
+                BookStore.prefs(this@RendersActivity).edit().putBoolean("render_gentle", on).apply(); update()
+            }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
             addView(summary); addView(details)
             addView(LinearLayout(this@RendersActivity).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END or Gravity.CENTER_VERTICAL
