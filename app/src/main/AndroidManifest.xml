@@ -16,7 +16,8 @@
         android:icon="${appIcon}"
         android:roundIcon="${appRoundIcon}"
         android:theme="@style/ReaderTheme"
-        android:extractNativeLibs="true">
+        android:extractNativeLibs="true"
+        android:largeHeap="true">
 
         <activity
             android:name=".MainActivity"

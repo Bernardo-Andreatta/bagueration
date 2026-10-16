@@ -393,9 +393,24 @@ object BookParser {
         }
     }
 
+    /**
+     * The book loaded last, shared by every screen: a long book is 25 MB of text, and the reader, the pre-loaded
+     * audio screen and the voice each holding their own copy ran the app out of memory.
+     */
+    private var cached: Triple<String, Long, Book>? = null
+
+    @Synchronized
     fun load(dir: File, id: String): Book? {
         val txt = File(dir, "$id.txt").takeIf { it.exists() } ?: return null
-        val text = txt.readText()
+        val key = txt.absolutePath
+        cached?.let { (k, modified, book) -> if (k == key && modified == txt.lastModified()) return book }
+        cached = null   // let the previous book go before reading the next one
+        return read(dir, id, txt)?.also { cached = Triple(key, txt.lastModified(), it) }
+    }
+
+    private fun read(dir: File, id: String, txt: File): Book? {
+        // straight from the bytes: readText() grows a buffer by doubling, a transient 2-3× the text
+        val text = String(txt.readBytes(), Charsets.UTF_8)
         val meta = File(dir, "$id.meta")
         if (meta.exists()) try {
             DataInputStream(meta.inputStream().buffered()).use { i ->

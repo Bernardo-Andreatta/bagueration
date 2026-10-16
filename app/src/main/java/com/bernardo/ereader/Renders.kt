@@ -27,6 +27,7 @@ data class Render(
     val created: Long,
     val doneChar: Int = fromChar,           // the finished parts cover [fromChar, doneChar); making resumes here
     val parts: List<Long> = emptyList(),    // length (ms) of each finished part; empty = older single-file render
+    val error: String = "",                 // why it last failed, shown on its card
 ) {
     val ready get() = status == "ready"
     /** Some audio can be played already (finished, or the parts made so far). */
@@ -62,7 +63,7 @@ object Renders {
     fun save(ctx: Context, r: Render) {
         dir(ctx, r.id).mkdirs()
         metaFile(ctx, r.id).writeText(listOf(r.id, r.bookId, r.fromChar, r.toChar, r.label, r.voiceId, r.settings,
-            r.status, r.durationMs, r.created, r.doneChar, r.parts.joinToString(",")).joinToString("\n"))
+            r.status, r.durationMs, r.created, r.doneChar, r.parts.joinToString(","), r.error.replace('\n', ' ')).joinToString("\n"))
     }
 
     fun load(ctx: Context, id: String): Render? = runCatching {
@@ -70,7 +71,8 @@ object Renders {
         val status = l[7]
         val parts = l.getOrNull(11).orEmpty().split(',').mapNotNull { it.toLongOrNull() }
         Render(l[0], l[1], l[2].toInt(), l[3].toInt(), l[4], l[5], l[6], status, l[8].toLong(), l[9].toLong(),
-            doneChar = l.getOrNull(10)?.toIntOrNull() ?: if (status == "ready") l[3].toInt() else l[2].toInt(), parts = parts)
+            doneChar = l.getOrNull(10)?.toIntOrNull() ?: if (status == "ready") l[3].toInt() else l[2].toInt(), parts = parts,
+            error = l.getOrNull(12).orEmpty())
     }.getOrNull()
 
     /** The audio files to play, in order. */
@@ -111,6 +113,20 @@ object Renders {
         active?.let { load(ctx, it) }?.takeIf(::covers)?.let { return it }
         return list(ctx, bookId).filter(::covers).maxWithOrNull(compareBy<Render>({ it.ready }, { it.created }))
     }
+
+    /**
+     * How much of [from, to) (a page) plays pre-loaded: all of it (one file after another, as the reader moves on
+     * between them), part of it (a file still being made, or one that starts or ends inside it), or none.
+     */
+    fun coverage(ctx: Context, bookId: String, from: Int, to: Int): Coverage {
+        if (activeId(ctx, bookId) == LIVE) return Coverage.NONE
+        var pos = from
+        while (pos < to) pos = playableAt(ctx, bookId, pos)?.coveredTo?.takeIf { it > pos } ?: break
+        if (pos >= to) return Coverage.FULL
+        return if (list(ctx, bookId).any { it.playable && it.fromChar < to && it.coveredTo > from }) Coverage.PARTIAL else Coverage.NONE
+    }
+
+    enum class Coverage { FULL, PARTIAL, NONE }
 
     // ---------- sync map ----------
 
@@ -186,9 +202,20 @@ class AacWriter(file: File, private val rate: Int, bitrate: Int = 64_000) {
     }
 
     fun finish() {
-        val idx = codec.dequeueInputBuffer(50_000)
-        if (idx >= 0) codec.queueInputBuffer(idx, 0, 0, queuedSamples * 1_000_000L / rate, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-        drain(true)
+        // the end-of-stream mark needs a free input buffer, and a busy (or throttled) encoder can be holding them all:
+        // take its output until one frees up. Without the mark, waiting for the end below never returned, and the
+        // whole pre-load hung there (no progress, "Pause" never taken)
+        val deadline = System.nanoTime() + 5_000_000_000L
+        var marked = false
+        while (!marked && System.nanoTime() < deadline) {
+            val idx = codec.dequeueInputBuffer(50_000)
+            if (idx >= 0) {
+                codec.queueInputBuffer(idx, 0, 0, queuedSamples * 1_000_000L / rate, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                marked = true
+            } else drain(false)
+        }
+        if (marked) drain(true, deadline)
+        else AppLog.e("Render", "encoder never took the end mark: the part ends at the audio it gave back")
         runCatching { codec.stop() }; codec.release()
         if (muxing) runCatching { muxer.stop() }
         muxer.release()
@@ -200,7 +227,8 @@ class AacWriter(file: File, private val rate: Int, bitrate: Int = 64_000) {
         runCatching { if (muxing) muxer.stop() }; runCatching { muxer.release() }
     }
 
-    private fun drain(endOfStream: Boolean) {
+    /** Take what the encoder has made; at the end, until its end mark comes out (or [deadline], nanoTime, passes). */
+    private fun drain(endOfStream: Boolean, deadline: Long = Long.MAX_VALUE) {
         while (true) {
             val idx = codec.dequeueOutputBuffer(info, if (endOfStream) 10_000 else 0)
             when {
@@ -216,7 +244,10 @@ class AacWriter(file: File, private val rate: Int, bitrate: Int = 64_000) {
                     codec.releaseOutputBuffer(idx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                 }
-                idx == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream) return
+                idx == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!endOfStream) return else if (System.nanoTime() > deadline) {
+                    AppLog.e("Render", "encoder never gave back its end mark: the part ends at the audio it gave back")
+                    return
+                }
             }
         }
     }

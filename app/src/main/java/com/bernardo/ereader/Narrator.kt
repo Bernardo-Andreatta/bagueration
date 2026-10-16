@@ -173,6 +173,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     private var dataDir: String? = null
     private var pool: ExecutorService? = null
     @Volatile private var ready = false
+    /** Why loading the engine failed: sessions waiting for it give up with this. */
+    @Volatile private var initError: String? = null
     /** True while a model is being (re)loaded, e.g. after switching to a voice in another language. */
     @Volatile var loadingEngine = false
 
@@ -242,6 +244,7 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             main.post { listener.onReady() }
         } catch (t: Throwable) {
             AppLog.e("Narrator", "TTS init failed", t)
+            initError = "the voice couldn't load (${t.message ?: t.javaClass.simpleName})"
             main.post { listener.onError("TTS init failed: ${t.message}") }
         }
     }
@@ -913,7 +916,10 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
 
         private fun generate() {
             try {
-                while (!ready && !cancelled) Thread.sleep(100) // still loading the model
+                while (!ready && !cancelled) {   // still loading the model
+                    initError?.let { throw IllegalStateException(it) }
+                    Thread.sleep(100)
+                }
                 val pool = pool ?: return
                 var pos = from.coerceIn(0, text.length)
                 while (!cancelled && pos < until) {
@@ -1060,7 +1066,11 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
             } catch (_: InterruptedException) {
             } catch (t: Throwable) {
                 AppLog.e("Narrator", "generation failed", t)
-                main.post { listener.onError("TTS error: ${t.message}") }
+                if (rendering) {
+                    // the file's own error (shown on its card); the reader may not even be open
+                    cancel()
+                    main.post { out!!.onError(t.message ?: t.javaClass.simpleName) }
+                } else main.post { listener.onError("TTS error: ${t.message}") }
             }
         }
 

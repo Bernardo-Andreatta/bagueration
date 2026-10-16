@@ -271,7 +271,8 @@ class RendersActivity : Activity() {
                     Kind.QUEUED -> "Starts when the one before it is done" + if (fraction > 0) " · $pct pre-loaded" else ""
                     Kind.PAUSED -> "$pct pre-loaded$ready"
                     Kind.STOPPED -> "$pct pre-loaded · paused when the app was closed"
-                    else -> if (r.playable) "Stopped at $pct by an error$ready" else "Couldn't be pre-loaded"
+                    else -> (if (r.playable) "Stopped at $pct by an error$ready" else "Couldn't be pre-loaded") +
+                        r.error.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
                 }
                 box.contentDescription = "${r.label}, $status, ${line.text}"
             }
@@ -316,7 +317,9 @@ class RendersActivity : Activity() {
                 if (r.playable) add(playPill(false))
             }
             Kind.FAILED -> {
-                add(ui.pill("Try again", R.drawable.ic_refresh, filled = true) { resume(r) })
+                lateinit var retry: TextView
+                retry = ui.pill("Try again", R.drawable.ic_refresh, filled = true) { retry(r, retry) }
+                add(retry)
                 if (r.playable) add(playPill(false))
             }
         }
@@ -378,9 +381,47 @@ class RendersActivity : Activity() {
 
     /** Prepare it again from where it stopped, keeping the parts already made. */
     private fun resume(r: Render) {
-        val b = book ?: return
+        val b = book ?: return Toast.makeText(this, "This book's text couldn't be opened", Toast.LENGTH_LONG).show()
         RenderManager.enqueue(this, r, b.text, specFrom(r.voiceId, r.settings))
         render()
+    }
+
+    /**
+     * "Try again": the arrow spins for a moment so the tap is seen, then it starts; when it fails again straight
+     * away, a message says why (the card alone looked the same as before the tap).
+     */
+    private fun retry(r: Render, pill: TextView) {
+        pill.isEnabled = false
+        pill.text = "Starting…"
+        spin(pill)
+        pill.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            resume(r)
+            Renders.load(this, r.id)?.takeIf { it.status == "failed" }?.let { again ->
+                Toast.makeText(this, "Still couldn't pre-load" + again.error.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty(),
+                    Toast.LENGTH_LONG).show()
+            }
+        }, 700)
+    }
+
+    /** Turns the pill's leading icon round and round until the pill goes away. */
+    private fun spin(pill: TextView) {
+        val icon = pill.compoundDrawablesRelative[0] ?: return
+        val turning = android.graphics.drawable.RotateDrawable().apply {
+            drawable = icon; fromDegrees = 0f; toDegrees = 360f
+            isPivotXRelative = true; isPivotYRelative = true; pivotX = 0.5f; pivotY = 0.5f
+            bounds = icon.bounds
+        }
+        pill.setCompoundDrawablesRelative(turning, null, null, null)
+        android.animation.ValueAnimator.ofInt(0, 10_000).apply {
+            addUpdateListener { turning.level = it.animatedValue as Int; pill.invalidate() }
+            duration = 700; repeatCount = android.animation.ValueAnimator.INFINITE
+            interpolator = android.view.animation.LinearInterpolator()
+            pill.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(v: View) {}
+                override fun onViewDetachedFromWindow(v: View) = cancel()
+            })
+        }.start()
     }
 
     private fun showHelp() {

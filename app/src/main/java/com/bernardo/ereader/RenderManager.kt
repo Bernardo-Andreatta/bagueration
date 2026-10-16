@@ -52,7 +52,7 @@ object RenderManager {
 
     /** Make [render], or continue it from where it stopped ([Render.doneChar], keeping its finished parts). */
     fun enqueue(ctx: Context, render: Render, text: String, spec: Narrator.RenderSpec) {
-        val r = render.copy(status = "processing")
+        val r = render.copy(status = "processing", error = "")
         Renders.save(ctx, r)
         waiting.add(Job(r, text, spec))
         AppLog.i("Render", "queued ${r.id}: ${r.label} (${r.describe()})" + if (r.parts.isNotEmpty()) ", continuing at ${(r.fraction * 100).toInt()}%" else "")
@@ -98,16 +98,52 @@ object RenderManager {
         }
     }
 
+    /** Stands in for the reader while a voice made here (with no reader open) pre-loads on its own. */
+    private object Headless : Narrator.Listener {
+        override fun onReady() {}
+        override fun onSentence(start: Int, end: Int) {}
+        override fun onWord(start: Int, end: Int) {}
+        override fun onBuffering(waiting: Boolean) {}
+        override fun onFinished() {}
+        override fun onError(msg: String) {}
+    }
+
+    /**
+     * The reader's voice, or one made for pre-loading alone: the phone can close the reader in the background to
+     * free memory (taking its voice with it) while the pre-loaded audio screen stays open.
+     */
+    private fun narratorFor(ctx: Context, job: Job): Narrator {
+        Narrator.instance?.let { return it }
+        AppLog.i("Render", "no reader open: starting a voice for pre-loading")
+        return Narrator(ctx, Headless).apply {
+            voiceId = job.spec.voiceId
+            init()
+        }
+    }
+
+    /** The reader closed while [n] was pre-loading: pre-loading owns it now, and lets it go when it's done. */
+    fun orphan(n: Narrator) { n.listener = Headless }
+
+    /** Nothing left to pre-load: a voice made only for that is let go (the reader makes its own when it opens). */
+    private fun releaseHeadless() {
+        Narrator.instance?.takeIf { it.listener === Headless && !it.isRendering }?.let {
+            AppLog.i("Render", "pre-loading done: releasing its voice")
+            it.release()
+        }
+    }
+
     private fun next(ctx: Context) {
-        val job = if (waiting.isEmpty()) return else waiting.removeAt(0)
-        val narrator = Narrator.instance
+        val job = if (waiting.isEmpty()) return releaseHeadless() else waiting.removeAt(0)
         // the latest state on disk: parts finished before a pause or an interruption are kept
         var r = Renders.load(ctx, job.render.id) ?: job.render
-        if (narrator == null) {
-            Renders.save(ctx, r.copy(status = "failed"))
-            AppLog.e("Render", "no narrator for ${r.id}")
-            return
+        val narrator = runCatching { narratorFor(ctx, job) }.getOrElse { t ->
+            Renders.save(ctx, r.copy(status = "failed", error = "the voice couldn't start (${t.message ?: t.javaClass.simpleName})"))
+            AppLog.e("Render", "no narrator for ${r.id}", t)
+            RenderService.finished(ctx, r, ok = false)
+            return next(ctx)
         }
+        // with no reader, nothing set this book's pronunciation fixes
+        if (narrator.listener === Headless) narrator.pronunciations = Pronunciations.rules(ctx, r.bookId)
         // sentences of the kept parts only (a part being written when the app was closed is made again)
         val sync = Renders.readSync(ctx, r.id).filter { it.ms < r.durationMs && it.start < r.doneChar }.toMutableList()
         val firstPart = r.parts.size
@@ -153,7 +189,7 @@ object RenderManager {
                 next(ctx)
             },
             onError = { msg ->
-                Renders.save(ctx, r.copy(status = "failed"))
+                Renders.save(ctx, r.copy(status = "failed", error = msg))
                 AppLog.e("Render", "failed ${r.id}: $msg")
                 current = null
                 RenderService.finished(ctx, r, ok = false)

@@ -237,8 +237,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         busy = findViewById(R.id.busy)
         speedChip = findViewById(R.id.speedChip)
         audioChip = findViewById(R.id.audioChip)
-        // nothing prepared in this book yet: straight to "Pre-load chapters"
-        audioChip.setOnClickListener { bookId?.let { openRenders(prepare = Renders.list(this, it).isEmpty()) } }
+        // the list (its empty state has the "Pre-load chapters" button); the sheet opens only when that's what was tapped
+        audioChip.setOnClickListener { openRenders() }
         controls = findViewById(R.id.controls)
         jumpBack = findViewById(R.id.jumpBack)
         dock = findViewById(R.id.dock)
@@ -257,9 +257,10 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             false
         }
 
-        // reuse the engine if it's still alive (an audio file was being made while the reader was closed)
+        // reuse the engine if it's still alive (an audio file was being made while the reader was closed); it may
+        // have been started by pre-loading alone, so the reader's settings are applied either way
         val alive = Narrator.instance?.takeIf { it.isRendering }
-        narrator = alive?.also { it.listener = this } ?: Narrator(this, this).apply {
+        narrator = (alive?.also { it.listener = this } ?: Narrator(this, this)).apply {
             val last = prefs.getString("last_book", null)
             voiceId = Voices.resolve(this@MainActivity, last, last?.let { prefs.getString("lang2_$it", null) }).id
             speed = prefs.getFloat("speed", 1.0f)
@@ -272,7 +273,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             // once stored this way lingered on a phone and left the voice at 2 threads, too slow to keep up)
             prefs.edit().remove("threads").apply()
             intent.getIntExtra("threads", -1).takeIf { it > 0 }?.let { threads = it }
-            init()
+            if (alive == null) init()
         }
         applyTheme()
         applyTypography()
@@ -1482,10 +1483,11 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         audioChip.visibility = if (id == null) View.GONE else View.VISIBLE
         if (id == null) return
         val making = RenderManager.current?.takeIf { it.render.bookId == id }
-        val here = if (pages.isNotEmpty()) Renders.playableAt(this, id, pages[page]) else null
+        val here = if (pages.isNotEmpty()) Renders.coverage(this, id, pages[page], pageEnd(page)) else Renders.Coverage.NONE
         val (label, icon) = when {
             making != null -> "Pre-loading ${(making.fraction * 100).toInt()}%" to R.drawable.ic_graphic_eq
-            here != null -> "Pre-loaded" to R.drawable.ic_headphones
+            here == Renders.Coverage.FULL -> "Pre-loaded" to R.drawable.ic_headphones
+            here == Renders.Coverage.PARTIAL -> "Partially pre-loaded" to R.drawable.ic_headphones
             else -> "Pre-load" to R.drawable.ic_download
         }
         // a narrow screen shows just the icon
@@ -1494,7 +1496,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         Icons.leading(audioChip, icon, th.accent, sizeDp = 16f, gapDp = if (narrow) 0f else 6f)
         audioChip.contentDescription = when {
             making != null -> "Pre-loading audio, ${(making.fraction * 100).toInt()} percent. Open pre-loaded audio"
-            here != null -> "This page plays pre-loaded audio. Open pre-loaded audio"
+            here == Renders.Coverage.FULL -> "This page plays pre-loaded audio. Open pre-loaded audio"
+            here == Renders.Coverage.PARTIAL -> "Part of this page plays pre-loaded audio, the rest reads live. Open pre-loaded audio"
             else -> "Pre-load chapters ahead of time"
         }
         audioChip.removeCallbacks(audioChipTick)
@@ -2063,7 +2066,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (NarrationService.controller === this) NarrationService.controller = null
         releaseAudio()
         stopService(Intent(this, NarrationService::class.java))
-        if (narrator.isRendering) narrator.stop() else narrator.release()
+        if (narrator.isRendering) { narrator.stop(); RenderManager.orphan(narrator) } else narrator.release()
         super.onDestroy()
     }
 }
