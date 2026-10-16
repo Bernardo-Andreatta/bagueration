@@ -271,7 +271,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
             // debug: adb shell am start -n com.bernardo.ereader/.MainActivity --ei threads 6 (this run only; a value
             // once stored this way lingered on a phone and left the voice at 2 threads, too slow to keep up)
             prefs.edit().remove("threads").apply()
-            threads = intent.getIntExtra("threads", -1).takeIf { it > 0 } ?: 4
+            intent.getIntExtra("threads", -1).takeIf { it > 0 }?.let { threads = it }
             init()
         }
         applyTheme()
@@ -763,13 +763,27 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val id = bookId ?: return
         fun seen() = prefs.edit().putBoolean("live_tip_$id", true).apply()
         val restricted = !Background.unrestricted(this)
-        Themes.dialog(this).setTitle("Reading aloud, live")
-            .setMessage("The voice is made on your phone as it reads. Over long listens that warms the phone and uses battery.\n\n" +
-                "Or pre-load this chapter first: it's made once, ahead of time, and plays with no loading. " +
+        // what this phone has managed so far: smooth, the odd wait, or frequent waits (then pre-loading is the
+        // recommended path, with live reading still one tap away)
+        val exp = if (narrator.experienceKnown) narrator.experience else null
+        val verdict = when (exp) {
+            "smooth" -> "On this phone, live reading has been smooth."
+            "some" -> "On this phone, live reading pauses now and then to catch up."
+            "frequent" -> "On this phone the voice is made slower than it plays, so live reading pauses often. Pre-loading is strongly recommended."
+            else -> ""
+        }
+        val frequent = exp == "frequent"
+        val d = Themes.dialog(this).setTitle("Reading aloud, live")
+            .setMessage((if (verdict.isNotEmpty()) "$verdict\n\n" else "") +
+                "The voice is made on your phone as it reads. Over long listens that warms the phone and uses battery.\n\n" +
+                "Pre-loading makes the chapter once, ahead of time, and it plays with no loading. " +
                 "You can start listening after a couple of minutes." +
                 if (restricted) "\n\nWith the screen off your phone slows this app down. Allowing unrestricted battery use helps." else "")
-            .setPositiveButton("Read live") { _, _ -> seen(); startReading(from) }
+        if (frequent) d.setPositiveButton("Pre-load chapters") { _, _ -> seen(); openRenders(prepare = true) }
+            .setNegativeButton("Read live anyway") { _, _ -> seen(); startReading(from) }
+        else d.setPositiveButton("Read live") { _, _ -> seen(); startReading(from) }
             .setNegativeButton("Pre-load chapters") { _, _ -> seen(); openRenders(prepare = true) }
+        d
             .apply {
                 if (restricted) setNeutralButton("Allow") { _, _ ->
                     seen()
@@ -1237,14 +1251,16 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         busy.visibility = if (show) View.VISIBLE else View.GONE
         val msg = if (narrator.isReady) "Preparing voice…" else "Loading voice model…"
         bufferPill.removeCallbacks(showBufferPill)
-        bufferPill.visibility = View.GONE
+        // (bufferPill now serves the "phone can't keep up" notice, see onSlowPhone)
         // a centered card, right away: the small pill went unnoticed and people tapped play and pause again and again
         if (show) {
             findViewById<TextView>(R.id.loadingText).text = msg
             // a phone that can't keep up (warm, or busy): say why the waits happen and what avoids them
-            findViewById<TextView>(R.id.loadingHint).text = if (narrator.currentRtf > 1.1)
-                "The phone is slow right now (warm, or busy), so the voice is made slower than it plays. Pre-loading chapters avoids these waits."
-                else "It starts in a moment"
+            findViewById<TextView>(R.id.loadingHint).text = when (narrator.experience) {
+                "frequent" -> "The phone is making the voice slower than it plays (warm, or busy), so these waits will keep coming. Pre-loading chapters avoids them."
+                "some" -> "The phone is a little behind the voice right now"
+                else -> "It starts in a moment"
+            }
             if (loadingOverlay.visibility != View.VISIBLE) {
                 loadingOverlay.alpha = 0f
                 loadingOverlay.visibility = View.VISIBLE
@@ -1255,6 +1271,20 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         if (show) pageLabel.text = msg
         else if (pages.isNotEmpty() && bookId != null) pageLabel.text = labelFor(page)
     }
+
+    /** The voice can't keep up on this phone: a pill above the player, once per run, that opens pre-loading. */
+    override fun onSlowPhone() {
+        if (bookId == null || !visible || narrator.isPlayingFile) return
+        bufferPill.text = "Phone can't keep up · tap to pre-load chapters"
+        Icons.leading(bufferPill, R.drawable.ic_download, th.accent, sizeDp = 16f, gapDp = 6f)
+        bufferPill.setOnClickListener { bufferPill.visibility = View.GONE; openRenders(prepare = true) }
+        bufferPill.alpha = 0f
+        bufferPill.visibility = View.VISIBLE
+        bufferPill.animate().alpha(1f).setDuration(180).start()
+        bufferPill.removeCallbacks(hideSlowPill)
+        bufferPill.postDelayed(hideSlowPill, 15_000)
+    }
+    private val hideSlowPill = Runnable { bufferPill.visibility = View.GONE }
 
     override fun onSentence(start: Int, end: Int) {
         onBuffering(false)

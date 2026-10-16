@@ -45,6 +45,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
         fun onGap(nextStart: Int, ms: Int) {}
         /** true while waiting for audio (model loading or synthesis falling behind). */
         fun onBuffering(waiting: Boolean)
+        /** Once per run: the voice is being made slower than it plays, so live reading will keep pausing. */
+        fun onSlowPhone() {}
         fun onFinished()
         fun onError(msg: String)
     }
@@ -197,7 +199,8 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     /** Pronunciation fixes for the current book (word -> how to say it), applied before anything else. */
     @Volatile var pronunciations: List<Pair<Regex, String>> = emptyList()
     val isPreviewing get() = session?.preview == true
-    var threads = 4
+    /** Engine threads: half the cores (big ones do the work; the rest stay for the screen and audio), 2 to 6. */
+    var threads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 6)
     val isReady get() = ready
     val isPlaying get() = session != null || filePlayer != null
     val isPlayingFile get() = filePlayer != null
@@ -209,7 +212,13 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
     /** How much audio to keep ready ahead of the listener (audio costs ~5.5 MB per minute in memory). */
     private val baseAheadMs = when { totalRamMb >= 7_000 -> 300_000L; totalRamMb >= 5_000 -> 180_000L; else -> 90_000L }
     /** Generation time / audio time, smoothed. Above ~1 the phone can't keep up (usually thermal throttling). */
-    @Volatile private var rtf = 0.6
+    @Volatile private var rtf = BookStore.prefs(ctx).getFloat("phone_rtf", 0.6f).toDouble()
+    private var rtfUpdates = 0
+    private var slowTold = false
+    /** "smooth" (cost under 0.8×), "some" waits (up to 1×) or "frequent" (the voice is made slower than it plays). */
+    val experience: String get() = when { rtf < 0.8 -> "smooth"; rtf <= 1.0 -> "some"; else -> "frequent" }
+    /** Has this phone's generation cost ever been measured (it's kept across runs)? */
+    val experienceKnown: Boolean get() = BookStore.prefs(ctx).contains("phone_rtf")
     /** Slow phone (or throttling): keep a bigger lead so stalls are absorbed. */
     val currentRtf get() = rtf
     private val aheadTargetMs get() = if (rtf > 0.8) baseAheadMs * 3 / 2 else baseAheadMs
@@ -983,7 +992,16 @@ class Narrator(context: Context, @Volatile var listener: Listener) {
                                     "${audio.samples.size * 1000L / audio.sampleRate}ms audio, ${sentence.length} chars; $levelNote")
                                 val genMs = (System.nanoTime() - t0) / 1_000_000.0
                                 val audioMs = audio.samples.size * 1000.0 / audio.sampleRate
-                                if (audioMs > 300) rtf = rtf * 0.8 + (genMs / audioMs) * 0.2
+                                if (audioMs > 300) {
+                                    rtf = rtf * 0.8 + (genMs / audioMs) * 0.2
+                                    // the phone's pace is kept across runs (the next run starts from it), and the
+                                    // reader hears once per run when the voice can't keep up
+                                    if (++rtfUpdates % 8 == 0) BookStore.prefs(ctx).edit().putFloat("phone_rtf", rtf.toFloat()).apply()
+                                    if (rtf > 1.0 && !slowTold && !rendering && !preview) {
+                                        slowTold = true
+                                        main.post { listener.onSlowPhone() }
+                                    }
+                                }
                                 // pre-loading: in gentle mode (a switch, read live so it applies at once) it rests as
                                 // long as it worked. And it follows the phone's thermal status: moderate = a short
                                 // rest, severe = a long one, critical = wait (checked every few seconds) until it's
