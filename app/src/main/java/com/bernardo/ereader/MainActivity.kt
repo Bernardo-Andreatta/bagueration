@@ -721,7 +721,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
     }
 
     private fun showEmpty() {
-        topBar.setTitle("bagueration2.0")
+        topBar.setTitle("Bagueration")
         pageView.text = ""
         pageLabel.text = ""
         emptyHolder.removeAllViews()
@@ -1669,7 +1669,7 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         }
         val shownTitle = if (::topBar.isInitialized) topBar.title.text to topBar.subtitle.text else null
         buildTopBar()
-        if (bookId != null) updateHeader() else shownTitle?.let { (t, sub) -> topBar.setTitle(t, sub) } ?: topBar.setTitle("bagueration2.0")
+        if (bookId != null) updateHeader() else shownTitle?.let { (t, sub) -> topBar.setTitle(t, sub) } ?: topBar.setTitle("Bagueration")
         if (bookId == null && emptyHolder.visibility == View.VISIBLE) showEmpty()
         updateJumpBack()
     }

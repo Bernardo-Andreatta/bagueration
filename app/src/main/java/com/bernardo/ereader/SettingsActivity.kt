@@ -644,7 +644,7 @@ class SettingsActivity : Activity() {
     private fun aboutCard() = card("About", R.drawable.ic_info) {
         addView(row("Send debug log", "Share it to report a problem") { AppLog.share(this@SettingsActivity) })
         val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""
-        addView(hintView("bagueration $version\nWorks offline. Voices by Kokoro (built in) and Piper (downloads), running on sherpa-onnx.").apply {
+        addView(hintView("Bagueration $version\nWorks offline. Voices by Kokoro (built in) and Piper (downloads), running on sherpa-onnx.").apply {
             setPadding(0, dp(6), 0, dp(6))
         })
     }

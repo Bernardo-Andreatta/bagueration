@@ -1,4 +1,4 @@
-# bagueration
+# Bagueration
 
 An Android e-reader that reads your books aloud with natural-sounding voices, entirely on the phone. No account, no cloud, no internet needed after install.
 

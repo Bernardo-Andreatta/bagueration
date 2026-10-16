@@ -12,7 +12,7 @@
 
     <application
         android:name=".App"
-        android:label="bagueration2.0"
+        android:label="Bagueration"
         android:icon="${appIcon}"
         android:roundIcon="${appRoundIcon}"
         android:theme="@style/ReaderTheme"

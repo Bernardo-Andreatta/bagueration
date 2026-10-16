@@ -110,7 +110,7 @@ class NarrationService : Service() {
         session.setMetadata(MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, title)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, chapter)
-            .putString(MediaMetadata.METADATA_KEY_ALBUM, "bagueration")
+            .putString(MediaMetadata.METADATA_KEY_ALBUM, "Bagueration")
             .apply {
                 this@NarrationService.cover?.let { putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
                 if (durationMs > 0) putLong(MediaMetadata.METADATA_KEY_DURATION, durationMs)
