@@ -38,16 +38,17 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
     private val rect = RectF()
     private val clip = Rect()
     private val visible = Rect()
-    /** The band of the view the last drawing covered (view coordinates); -1 = everything. */
-    private var drawnTop = -1
-    private var drawnBottom = -1
+    /** The band of the view the last drawing covered (view coordinates; the top goes negative at the start of a chapter). */
+    private var drawnTop = 0
+    private var drawnBottom = 0
+    private var banded = false   // false = the last drawing covered everything
 
     /**
      * True when the part on screen has moved outside what was last drawn and the view must be redrawn. The reader
      * asks on every scroll: redrawing only then (not every frame) is what keeps a glide smooth on a 120 Hz screen.
      */
     fun needsRedraw(): Boolean {
-        if (drawnTop < 0) return false
+        if (!banded) return false
         if (!getLocalVisibleRect(visible)) return false
         // the margin is a screen on each side: redraw once the visible part is within half a screen of the edge
         val slack = visible.height() / 2
@@ -64,8 +65,9 @@ class PageView(ctx: Context, attrs: AttributeSet?) : TextView(ctx, attrs) {
             val margin = visible.height().coerceAtLeast(lineHeight * 4)
             drawnTop = visible.top - margin
             drawnBottom = visible.bottom + margin
+            banded = true
             canvas.clipRect(0, drawnTop, width, drawnBottom)
-        } else { drawnTop = -1; drawnBottom = -1 }
+        } else banded = false
         val layout = layout
         val t = text as? Spanned
         if (layout != null && t != null) {
