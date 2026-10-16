@@ -1260,7 +1260,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
 
     // ---------- following the voice: the page moves only in the pauses between sentences ----------
 
-    private var followAnim: android.animation.ValueAnimator? = null
+    /** Scroll position a glide is heading for, or -1 when the page is still. */
+    private var glideTarget = -1
 
     /** Scroll position (px) that puts the middle of [start, end) a bit above the middle of the visible part. */
     private fun centeredOn(start: Int, end: Int): Int? {
@@ -1277,20 +1278,40 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         return (anchor - coverTop() - (vh * 0.45f).toInt()).coerceIn(0, max)
     }
 
-    /** Glide the page to [target] over [ms] (one animation at a time). Tiny moves are skipped so the page doesn't twitch. */
+    /**
+     * Glide the page to [target] over [ms]. The page's translation is animated, not the scroll position: a
+     * translation animation runs on the render thread, frame by frame, without the UI thread, which is what keeps it
+     * smooth while the voice is being made (synthesis keeps every core busy and the UI thread misses frames). When
+     * it lands, the scroll position takes over in the same frame. Tiny moves are skipped so the page doesn't twitch;
+     * a move of more than a screen is done at once.
+     */
     private fun glideTo(target: Int, ms: Long) {
+        stopGliding()
         val diff = target - scroll.scrollY
         if (abs(diff) < 10 * resources.displayMetrics.density) return
-        followAnim?.cancel()
-        followAnim = android.animation.ValueAnimator.ofInt(scroll.scrollY, target).apply {
-            duration = ms
-            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
-            addUpdateListener { scroll.scrollTo(0, it.animatedValue as Int) }
-            start()
-        }
+        if (abs(diff) > scroll.height) { scroll.scrollTo(0, target); return }
+        glideTarget = target
+        pageView.translationY = 0f
+        pageView.animate().translationY(-diff.toFloat()).setDuration(ms)
+            .setInterpolator(android.view.animation.AccelerateDecelerateInterpolator())
+            .withEndAction {
+                if (glideTarget != target) return@withEndAction
+                glideTarget = -1
+                pageView.translationY = 0f
+                scroll.scrollTo(0, target)
+            }
+            .start()
     }
 
-    private fun stopGliding() { followAnim?.cancel(); followAnim = null }
+    /** Stop a glide where it is: what was travelled becomes scroll position. */
+    private fun stopGliding() {
+        if (glideTarget < 0) return
+        glideTarget = -1
+        val moved = -pageView.translationY.toInt()
+        pageView.animate().cancel()
+        pageView.translationY = 0f
+        if (moved != 0) scroll.scrollTo(0, scroll.scrollY + moved)
+    }
 
     /** The pause after a sentence began: bring the next sentence to the middle while nothing is being said. */
     override fun onGap(nextStart: Int, ms: Int) {
@@ -1299,36 +1320,15 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         while (k < text.length && text[k].isWhitespace()) k++
         if (k >= text.length || k !in pages[page] until pageEnd(page)) return   // next chapter: its page opens at the top
         val (s, e) = sentenceAround(k)
-        if (narrator.isPlayingFile && !RenderManager.isBusy) {
-            // pre-made audio and nothing being made in the background: the phone is idle, so a glide is smooth
-            val target = centeredOn(s, e) ?: return
-            glideTo(target, ms.toLong().coerceIn(220, 650))
-            return
-        }
-        // live reading: synthesis keeps every core busy and an animation stutters (sickening when you're reading
-        // along), so the page doesn't move while the next sentence still fits; when it wouldn't, it turns in one
-        // step during the pause, putting that sentence near the top, like a page turn
-        val layout = pageView.layout ?: return
-        val win = visibleWindow()
-        val top = layout.getLineTop(layout.getLineForOffset((s - pages[page]).coerceIn(0, pageView.text.length))) + pageView.paddingTop
-        val bottom = layout.getLineBottom(layout.getLineForOffset((maxOf(e - 1, s) - pages[page]).coerceIn(0, pageView.text.length))) + pageView.paddingTop
-        if (top >= win.first && bottom <= win.last) return
-        stopGliding()
-        scroll.scrollTo(0, pageTurnTarget(top, bottom))
-    }
-
-    /** Scroll position that puts a sentence spanning [top, bottom] (px) near the top of the visible part. */
-    private fun pageTurnTarget(top: Int, bottom: Int): Int {
-        val vh = scroll.height - coverTop() - coverBottom()
-        val max = ((scroll.getChildAt(0)?.height ?: 0) - scroll.height).coerceAtLeast(0)
-        // a sentence taller than the visible part starts right at the top
-        val lead = if (bottom - top > vh * 0.8) 0 else (vh * 0.12f).toInt()
-        return (top - coverTop() - lead).coerceIn(0, max)
+        val target = centeredOn(s, e) ?: return
+        // use the whole pause, within reason: long enough to be gentle, short enough to be done before the voice resumes
+        glideTo(target, ms.toLong().coerceIn(220, 650))
     }
 
     /** The sentence is being read but isn't on screen (a jump, a sentence taller than the screen): bring it in. */
     private fun keepSpokenVisible() {
         if (!follow || !visible || !narrator.isPlaying || pages.isEmpty()) return
+        if (glideTarget >= 0) return
         val layout = pageView.layout ?: return
         val at = if (word.first >= spoken.first && word.first < spoken.second) word.first else spoken.first
         if (at < 0 || at !in pages[page] until pageEnd(page)) return
@@ -1337,16 +1337,8 @@ class MainActivity : Activity(), Narrator.Listener, NarrationService.Controller 
         val bottom = layout.getLineBottom(line) + pageView.paddingTop
         val win = visibleWindow()
         if (top >= win.first && bottom <= win.last) return
-        if (followAnim?.isRunning == true) return
-        if (narrator.isPlayingFile && !RenderManager.isBusy) {
-            val target = centeredOn(spoken.first, spoken.second) ?: return
-            glideTo(target, 320)
-        } else {
-            // live: one step, no animation (see onGap)
-            val a = layout.getLineForOffset((spoken.first - pages[page]).coerceIn(0, pageView.text.length))
-            val b = layout.getLineForOffset((maxOf(spoken.second - 1, spoken.first) - pages[page]).coerceIn(0, pageView.text.length))
-            scroll.scrollTo(0, pageTurnTarget(layout.getLineTop(a) + pageView.paddingTop, layout.getLineBottom(b) + pageView.paddingTop))
-        }
+        val target = centeredOn(spoken.first, spoken.second) ?: return
+        glideTo(target, 320)
     }
 
     private fun highlightSpoken() {
